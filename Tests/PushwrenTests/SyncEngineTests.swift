@@ -76,6 +76,8 @@ final class SyncEngineTests: XCTestCase {
         )
     }
 
+    private var methods: [String] { StubURLProtocol.recorded.map { $0.request.httpMethod ?? "?" } }
+
     private var sentBodies: [[String: Any]] {
         StubURLProtocol.recorded.compactMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }
     }
@@ -87,28 +89,127 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.recorded.count, 0)
     }
 
-    func testUserIDAndTagsSetBeforeTheTokenGoOutWithTheFirstRegistration() async {
+    func testPutCarriesNoTagsOrUserID() async {
         let e = engine()
-        await e.update { $0.userId = "u_1" }
-        await e.update { $0.tags = ["pro"] }
+        await e.setUser("u_1", signature: nil)
+        await e.addTags(["pro"])
         await e.update { $0.token = testToken; $0.environment = .sandbox }
         await e.settle()
-        XCTAssertEqual(StubURLProtocol.recorded.count, 1)
-        XCTAssertEqual(sentBodies.first?["userId"] as? String, "u_1")
-        XCTAssertEqual(sentBodies.first?["tags"] as? [String], ["pro"])
+        let put = StubURLProtocol.recorded.first { $0.request.httpMethod == "PUT" }
+        let body = put.flatMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }
+        XCTAssertNotNil(body?["token"])
+        XCTAssertNil(body?["tags"])
+        XCTAssertNil(body?["userId"])
+    }
+
+    func testTagsAddedBeforeTheTokenGoOutAsOnePatchAfterRegistration() async {
+        let e = engine()
+        await e.setUser("u_1", signature: nil)
+        await e.addTags(["pro"])
+        await e.addTags(["team-warriors"])
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        let patch = sentBodies[1]
+        XCTAssertEqual(patch["addTags"] as? [String], ["pro", "team-warriors"])
+        XCTAssertEqual(patch["userId"] as? String, "u_1")
+        XCTAssertEqual(StubURLProtocol.recorded[1].request.value(forHTTPHeaderField: "X-Device-Secret"), "secret-1")
+        XCTAssertNil(store.load()?.pending.patch(), "nothing left pending")
+    }
+
+    func testAChangeMadeDuringAPatchGoesOutNext() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        let made = OSAllocatedUnfairLock(initialState: false)
+        StubURLProtocol.answer { r in
+            if r.request.httpMethod == "PATCH", !made.withLock({ m in defer { m = true }; return m }) {
+                Task { await e.addTags(["late"]) }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            return .json(200, ["deviceId": "x"])
+        }
+        await e.addTags(["early"])
+        await e.settle()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        await e.settle()
+        let adds = sentBodies.compactMap { $0["addTags"] as? [String] }
+        XCTAssertEqual(adds.first, ["early"])
+        XCTAssertTrue(adds.contains(["late"]), "\(adds)")
+    }
+
+    func testWeeklyRefreshIsAPutWithoutTags() async {
+        answer([.json(201, ["deviceId": "x", "deviceSecret": "s"]), .json(200, ["deviceId": "x"])])
+        let e = engine()
+        await e.addTags(["pro"])
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        clock.advance(days: 7.1)
+        await e.syncIfNeeded()
+        XCTAssertEqual(methods, ["PUT", "PATCH", "PUT"])
+        XCTAssertNil(sentBodies[2]["tags"])
+    }
+
+    func testANewIdentityReappliesTheAppsTagsAndUser() async {
+        let e = engine()
+        await e.setUser("u_1", signature: nil)
+        await e.addTags(["pro"])
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        // The server lost the record (or the secret): 403 starts over, and the new record gets everything again.
+        answer([.json(403, ["error": ["code": "forbidden", "message": "x"]]), .json(201, ["deviceId": "x", "deviceSecret": "fresh"]), .json(200, ["deviceId": "x"])])
+        await e.update { $0.appVersion = "2.0" }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PUT", "PATCH"])
+        XCTAssertEqual(sentBodies[2]["addTags"] as? [String], ["pro"])
+        XCTAssertEqual(sentBodies[2]["userId"] as? String, "u_1")
+    }
+
+    func testVersion1StateMigratesWithNothingPending() async throws {
+        // What 0.1.x saved: tags and userId inside desired and lastSent, no pending, no version.
+        let v1 = """
+        {"desired":{"token":"\(testToken)","environment":"sandbox","platform":"ios","bundleId":"com.pushwren.sample","userId":"u_1","tags":["pro"],"sdkVersion":"0.1.0"},
+         "lastSent":{"token":"\(testToken)","environment":"sandbox","platform":"ios","bundleId":"com.pushwren.sample","userId":"u_1","tags":["pro"],"sdkVersion":"0.1.0"},
+         "lastSyncAt":\(clock.now.timeIntervalSinceReferenceDate)}
+        """
+        let decoded = try JSONDecoder().decode(PersistedState.self, from: Data(v1.utf8))
+        XCTAssertEqual(decoded.desired.tags, ["pro"])
+        XCTAssertEqual(decoded.desired.userId, "u_1")
+        XCTAssertNil(decoded.pending.patch())
+        var migrated = decoded
+        migrated.lastSentHost = key.apiBaseURL.host
+        store.save(migrated)
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA", secret: "s")
+        let e = engine()
+        await e.syncIfNeeded()
+        XCTAssertEqual(StubURLProtocol.recorded.count, 0, "the server already has 0.1.x's tags and user")
+    }
+
+    func testANewAPIHostForcesARegistration() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        var state = store.load()!
+        state.lastSentHost = "api.other.example"
+        store.save(state)
+        let again = engine()
+        await again.syncIfNeeded()
+        XCTAssertEqual(methods, ["PUT", "PUT"])
     }
 
     func testPendingChangeIsSentAfterRelaunch() async {
         // First launch: the change is saved, but the app is gone before it syncs.
         let first = engine(debounce: 60, realSleep: true)
-        await first.update { $0.token = testToken; $0.environment = .sandbox; $0.userId = "u_1" }
+        await first.update { $0.token = testToken; $0.environment = .sandbox }
+        await first.setUser("u_1", signature: nil)
         await first.stop()
         XCTAssertEqual(StubURLProtocol.recorded.count, 0)
         // Next launch, with nothing called again.
         let second = engine()
         await second.syncIfNeeded()
-        XCTAssertEqual(StubURLProtocol.recorded.count, 1)
-        XCTAssertEqual(sentBodies.first?["userId"] as? String, "u_1")
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        XCTAssertEqual(sentBodies[1]["userId"] as? String, "u_1")
     }
 
     func testUnchangedStateIsNotResentWithinSevenDays() async {
@@ -134,11 +235,13 @@ final class SyncEngineTests: XCTestCase {
     func testChangesWithinTheDebounceWindowAreOneRequest() async {
         let e = engine(debounce: 0.2, realSleep: true)
         await e.update { $0.token = testToken; $0.environment = .sandbox }
-        await e.update { $0.userId = "u_1" }
-        await e.update { $0.tags = ["pro", "beta"] }
+        await e.update { $0.appVersion = "2.0" }
+        await e.addTags(["pro"])
+        await e.addTags(["beta"])
         await e.settle()
-        XCTAssertEqual(StubURLProtocol.recorded.count, 1)
-        XCTAssertEqual(sentBodies.first?["tags"] as? [String], ["beta", "pro"])
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        XCTAssertEqual(sentBodies[0]["appVersion"] as? String, "2.0")
+        XCTAssertEqual(sentBodies[1]["addTags"] as? [String], ["beta", "pro"])
     }
 
     func testForbiddenStartsOverOnceWithANewDeviceID() async {
@@ -178,13 +281,13 @@ final class SyncEngineTests: XCTestCase {
     func testTransientFailuresBackOffAndKeepTheChange() async {
         answer([.json(503, [:]), .failure(.timedOut), .json(201, ["deviceId": "x", "deviceSecret": "s"])])
         let e = engine()
-        await e.update { $0.token = testToken; $0.environment = .sandbox; $0.userId = "u_1" }
+        await e.update { $0.token = testToken; $0.environment = .sandbox; $0.appVersion = "2.0" }
         await e.settle()
         XCTAssertEqual(StubURLProtocol.recorded.count, 3)
         let backoffs = sleeper.waits.filter { $0 > 0 }
         XCTAssertEqual(backoffs.count, 2)
         XCTAssertTrue((0.5...1.0).contains(backoffs[0]) && (1.0...2.0).contains(backoffs[1]), "\(backoffs)")
-        XCTAssertEqual(store.load()?.lastSent?.userId, "u_1")
+        XCTAssertEqual(store.load()?.lastSent?.appVersion, "2.0")
     }
 
     func testARejectedRegistrationIsNotRetriedButStaysPending() async {
@@ -232,9 +335,9 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.recorded.count, 0, "the old phone's token is never sent")
         await e.update { $0.token = testToken }
         await e.settle()
-        XCTAssertEqual(StubURLProtocol.recorded.count, 1)
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
         XCTAssertEqual(sentBodies.first?["token"] as? String, testToken)
-        XCTAssertEqual(sentBodies.first?["userId"] as? String, "u_1", "the user's own settings come along")
+        XCTAssertEqual(sentBodies[1]["userId"] as? String, "u_1", "the user's own settings come along")
     }
 
     func testEachAppKeepsItsOwnStateFile() {

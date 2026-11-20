@@ -1,16 +1,15 @@
 import Foundation
 
-/// The body of PUT /v1/devices/{deviceId}, field for field the server's RegisterDevice
-/// (packages/shared/src/api/devices.ts). Absent fields are left out of the JSON.
+/// The body of PUT /v1/devices/{deviceId}: the server's RegisterDevice
+/// (packages/shared/src/api/devices.ts) without tags and user ID, which go out as PATCH
+/// operations (PendingChanges) so the server's own changes to them survive. Absent fields are
+/// left out of the JSON.
 struct DevicePayload: Codable, Equatable, Sendable {
     var token: String
     var environment: ApsEnvironment
     var platform: Platform
     var bundleId: String
     var authorizationStatus: AuthorizationStatus?
-    var userId: String?
-    var userIdSignature: String?
-    var tags: [String]
     var locale: String?
     var timezone: String?
     var appVersion: String?
@@ -24,9 +23,6 @@ struct DevicePayload: Codable, Equatable, Sendable {
         platform: Platform,
         bundleId: String,
         authorizationStatus: AuthorizationStatus? = nil,
-        userId: String? = nil,
-        userIdSignature: String? = nil,
-        tags: [String] = [],
         locale: String? = nil,
         timezone: String? = nil,
         appVersion: String? = nil,
@@ -39,10 +35,6 @@ struct DevicePayload: Codable, Equatable, Sendable {
         self.platform = platform
         self.bundleId = bundleId
         self.authorizationStatus = authorizationStatus
-        self.userId = userId
-        self.userIdSignature = userIdSignature
-        // Sorted, so the same set of tags always compares and encodes the same.
-        self.tags = tags.sorted()
         self.locale = locale
         self.timezone = timezone
         self.appVersion = appVersion
@@ -103,6 +95,13 @@ struct APIClient: Sendable {
         guard status == 201 else { return nil }
         struct Created: Decodable { let deviceSecret: String }
         return (try? JSONDecoder().decode(Created.self, from: data))?.deviceSecret
+    }
+
+    /// Applies tag and user-ID changes to the device the secret belongs to.
+    func patchDevice(_ deviceID: String, _ patch: DevicePatch, secret: String) async throws(APIError) {
+        let body: Data
+        do { body = try Self.encoder.encode(patch) } catch { throw .rejected(code: "encoding", message: "\(error)") }
+        _ = try await send("PATCH", deviceID, body: body, secret: secret)
     }
 
     /// Removes the device. A device the server no longer has counts as removed.

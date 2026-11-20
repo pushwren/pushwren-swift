@@ -68,6 +68,8 @@ Apps that already have an app delegate can skip the adaptor and forward
 - Keeps a device ID and secret in the Keychain, on this device only.
 - Sends changes when they happen, plus a refresh at most once a week. It retries with backoff and
   keeps pending changes across relaunches.
+- Sends tag and user-ID changes as changes, not as a full list, so tags your server adds with
+  `PATCH /v1/devices/{id}` stay when the app adds its own. For the user ID, the last change wins.
 - Ships a privacy manifest. There is no tracking and no IDFA.
 
 ## License

@@ -61,23 +61,23 @@ public enum Pushwren {
             Log.error("Pushwren.setUserID: the signature isn't 64 hex characters (HMAC-SHA256); sending the user ID without it")
             return nil
         }
-        enqueue { await Runtime.shared.apply { $0.userId = userID; $0.userIdSignature = signature } }
+        enqueue { await Runtime.shared.engineDo { await $0.setUser(userID, signature: signature) } }
     }
 
     /// Unlinks the device from its user, for example on sign-out.
     public static func clearUserID() {
-        enqueue { await Runtime.shared.apply { $0.userId = nil; $0.userIdSignature = nil } }
+        enqueue { await Runtime.shared.engineDo { await $0.clearUser() } }
     }
 
     /// Tags are 1 to 64 letters, digits and _ . : -, at most 50 per device. Others are dropped and logged.
     public static func addTags(_ tags: [String]) {
         let clean = cleanTags(tags)
-        enqueue { await Runtime.shared.apply { $0.tags = merge(tags: $0.tags, adding: clean) } }
+        enqueue { await Runtime.shared.engineDo { await $0.addTags(clean) } }
     }
 
     public static func removeTags(_ tags: [String]) {
-        let clean = Set(cleanTags(tags))
-        enqueue { await Runtime.shared.apply { $0.tags = $0.tags.filter { !clean.contains($0) } } }
+        let clean = cleanTags(tags)
+        enqueue { await Runtime.shared.engineDo { await $0.removeTags(clean) } }
     }
 
     // MARK: Debugging
@@ -240,7 +240,8 @@ actor Runtime {
     private var key: AppKey?
     private var detection: EnvironmentDetection?
     private var registrationError: String?
-    private var pending: [@Sendable (inout DeviceState) -> Void] = []
+    /// Calls made before the engine exists, applied in order once it does.
+    private var pending: [@Sendable (SyncEngine) async -> Void] = []
 
     func start(key: AppKey, override: ApsEnvironment?) async {
         guard engine == nil else {
@@ -291,7 +292,7 @@ actor Runtime {
             s.timezone = facts.timezone
             s.model = facts.model
         }
-        for change in pending { await engine.update(change) }
+        for call in pending { await call(engine) }
         pending = []
         observeForeground()
         await refreshPermission()
@@ -301,7 +302,12 @@ actor Runtime {
     }
 
     func apply(_ change: @escaping @Sendable (inout DeviceState) -> Void) async {
-        if let engine { await engine.update(change) } else { pending.append(change) }
+        await engineDo { await $0.update(change) }
+    }
+
+    /// Runs a call on the sync engine, or holds it until `configure` has started one.
+    func engineDo(_ call: @escaping @Sendable (SyncEngine) async -> Void) async {
+        if let engine { await call(engine) } else { pending.append(call) }
     }
 
     func didRegister(token: String) async {
@@ -363,6 +369,8 @@ actor Runtime {
         #endif
         _ = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
             Pushwren.refreshPermissionStatus()
+            // The weekly refresh and anything pending, also for apps that stay running for days.
+            Pushwren.enqueue { await Runtime.shared.engineDo { engine in Task { await engine.syncIfNeeded() } } }
         }
     }
 }

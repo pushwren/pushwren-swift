@@ -10,9 +10,7 @@ final class APIClientTests: XCTestCase {
         platform: .ios,
         bundleId: "com.pushwren.sample",
         authorizationStatus: .authorized,
-        userId: "u_1",
-        tags: ["pro", "beta"],
-        sdkVersion: "0.1.0"
+        sdkVersion: "0.2.0"
     )
 
     private func client() -> APIClient { APIClient(key: key, session: StubURLProtocol.session()) }
@@ -31,8 +29,18 @@ final class APIClientTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: sent.body) as? [String: Any])
         XCTAssertEqual(json["token"] as? String, payload.token)
         XCTAssertEqual(json["environment"] as? String, "sandbox")
-        XCTAssertEqual(json["tags"] as? [String], ["beta", "pro"], "tags are sent sorted")
+        XCTAssertNil(json["tags"], "tags go out as PATCH operations, never in a registration")
+        XCTAssertNil(json["userId"])
         XCTAssertNil(json["locale"], "absent fields are left out, not sent as null")
+    }
+
+    func testPatchSendsTheOperationsWithTheSecret() async throws {
+        StubURLProtocol.answer { _ in .json(200, ["deviceId": "x"]) }
+        try await client().patchDevice(deviceID, DevicePatch(user: .clear, addTags: ["pro"], removeTags: []), secret: "s3cret")
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        XCTAssertEqual(sent.request.httpMethod, "PATCH")
+        XCTAssertEqual(sent.request.value(forHTTPHeaderField: "X-Device-Secret"), "s3cret")
+        XCTAssertEqual(String(data: sent.body, encoding: .utf8), #"{"addTags":["pro"],"userId":null}"#)
     }
 
     func testFirstRegistrationSendsNoSecretAndReturnsTheNewOne() async throws {
