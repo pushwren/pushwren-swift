@@ -66,3 +66,17 @@ targets:
       base:
         ENABLE_HARDENED_RUNTIME: YES
         LSApplicationCategoryType: public.app-category.developer-tools
+# Shared schemes, so command-line builds (CI, and xcodebuild here) never depend on Xcode creating them.
+schemes:
+  PushwrenSample-iOS:
+    build:
+      targets:
+        PushwrenSample-iOS: all
+    run:
+      config: Debug
+  PushwrenSample-macOS:
+    build:
+      targets:
+        PushwrenSample-macOS: all
+    run:
+      config: Debug

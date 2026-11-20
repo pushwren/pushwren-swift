@@ -91,7 +91,7 @@ struct APIClient: Sendable {
     func putDevice(_ deviceID: String, _ payload: DevicePayload, secret: String?) async throws(APIError) -> String? {
         let body: Data
         do { body = try Self.encoder.encode(payload) } catch { throw .rejected(code: "encoding", message: "\(error)") }
-        let (status, data) = try await send("PUT", deviceID, body: body, secret: secret)
+        let (status, data) = try await send("PUT", "v1/devices/\(deviceID)", body: body, secret: secret)
         guard status == 201 else { return nil }
         struct Created: Decodable { let deviceSecret: String }
         return (try? JSONDecoder().decode(Created.self, from: data))?.deviceSecret
@@ -101,13 +101,21 @@ struct APIClient: Sendable {
     func patchDevice(_ deviceID: String, _ patch: DevicePatch, secret: String) async throws(APIError) {
         let body: Data
         do { body = try Self.encoder.encode(patch) } catch { throw .rejected(code: "encoding", message: "\(error)") }
-        _ = try await send("PATCH", deviceID, body: body, secret: secret)
+        _ = try await send("PATCH", "v1/devices/\(deviceID)", body: body, secret: secret)
+    }
+
+    /// Reports that the user opened a notification on this device.
+    func postEvent(deviceID: String, notificationID: String, secret: String) async throws(APIError) {
+        struct Event: Encodable { let type = "opened"; let deviceId: String; let notificationId: String }
+        let body: Data
+        do { body = try Self.encoder.encode(Event(deviceId: deviceID, notificationId: notificationID)) } catch { throw .rejected(code: "encoding", message: "\(error)") }
+        _ = try await send("POST", "v1/events", body: body, secret: secret)
     }
 
     /// Removes the device. A device the server no longer has counts as removed.
     func deleteDevice(_ deviceID: String, secret: String) async throws(APIError) {
         do {
-            _ = try await send("DELETE", deviceID, body: nil, secret: secret)
+            _ = try await send("DELETE", "v1/devices/\(deviceID)", body: nil, secret: secret)
         } catch .rejected(let code, _) where code == "not_found" {
             return
         }
@@ -120,8 +128,8 @@ struct APIClient: Sendable {
         return min(max(value, 1), 3600)
     }
 
-    private func send(_ method: String, _ deviceID: String, body: Data?, secret: String?) async throws(APIError) -> (Int, Data) {
-        var request = URLRequest(url: key.apiBaseURL.appendingPathComponent("v1/devices/\(deviceID)"), timeoutInterval: 15)
+    private func send(_ method: String, _ path: String, body: Data?, secret: String?) async throws(APIError) -> (Int, Data) {
+        var request = URLRequest(url: key.apiBaseURL.appendingPathComponent(path), timeoutInterval: 15)
         request.httpMethod = method
         request.setValue("Bearer \(key.raw)", forHTTPHeaderField: "Authorization")
         request.setValue("pushwren-swift/\(SDK.version)", forHTTPHeaderField: "User-Agent")

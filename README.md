@@ -55,6 +55,11 @@ Pushwren.setUserID("u_123")                          // after sign-in
 Pushwren.clearUserID()                               // on sign-out
 Pushwren.addTags(["pro"])
 print(await Pushwren.diagnostics())                  // what Pushwren knows about this device
+
+// Deep links: every tap, including the one that launched the app.
+for await opened in Pushwren.opens {
+    router.handle(opened.data)
+}
 ```
 
 Apps that already have an app delegate can skip the adaptor and forward
@@ -68,6 +73,7 @@ Apps that already have an app delegate can skip the adaptor and forward
 - Keeps a device ID and secret in the Keychain, on this device only.
 - Sends changes when they happen, plus a refresh at most once a week. It retries with backoff and
   keeps pending changes across relaunches.
+- Counts opens: a tap on a notification Pushwren sent is reported once, even across relaunches.
 - Sends tag and user-ID changes as changes, not as a full list, so tags your server adds with
   `PATCH /v1/devices/{id}` stay when the app adds its own. For the user ID, the last change wins.
 - Ships a privacy manifest. There is no tracking and no IDFA.

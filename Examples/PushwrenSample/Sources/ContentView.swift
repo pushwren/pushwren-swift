@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var diagnostics = "Starting…"
     @State private var permission = ""
+    @State private var lastOpen = "none yet"
 
     var body: some View {
         NavigationStack {
@@ -14,6 +15,11 @@ struct ContentView: View {
                         .font(.system(.footnote, design: .monospaced))
                         .textSelection(.enabled)
                     Button("Copy device ID") { copy(Pushwren.deviceID ?? "") }
+                }
+                Section("Last opened notification") {
+                    Text(lastOpen)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
                 }
                 Section("Try it") {
                     Button("Ask for permission") {
@@ -32,6 +38,13 @@ struct ContentView: View {
             }
             .navigationTitle("Pushwren Sample")
             .toolbar { Button("Refresh") { Task { await refresh() } } }
+        }
+        .task {
+            // Taps arrive here, including the one that launched the app.
+            for await open in Pushwren.opens {
+                let data = String(data: open.dataJSON, encoding: .utf8) ?? "{}"
+                lastOpen = "\(open.notificationID ?? "not from Pushwren")\n\(data)"
+            }
         }
         .task {
             // Refresh a few times while the first registration happens.

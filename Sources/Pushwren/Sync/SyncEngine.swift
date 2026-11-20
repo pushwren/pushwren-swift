@@ -101,6 +101,17 @@ actor SyncEngine {
         changed()
     }
 
+    /// Opens kept while the device can't report them; older ones are dropped beyond this.
+    static let maxQueuedOpens = 100
+
+    /// Queues an `opened` event; it goes out once the device has its secret.
+    func recordOpen(_ notificationID: String) {
+        guard !state.opens.contains(notificationID) else { return }
+        state.opens.append(notificationID)
+        if state.opens.count > Self.maxQueuedOpens { state.opens.removeFirst(state.opens.count - Self.maxQueuedOpens) }
+        changed()
+    }
+
     private func changed() {
         store.save(state)
         schedule(after: debounce)
@@ -149,7 +160,8 @@ actor SyncEngine {
             let stale = state.lastSyncAt.map { now().timeIntervalSince($0) > Self.refreshInterval } ?? true
             let needsPut = payload != state.lastSent || stale || state.lastSentHost != host
             let patch = state.pending.patch()
-            guard needsPut || patch != nil else { return }
+            let open = state.opens.first
+            guard needsPut || patch != nil || open != nil else { return }
 
             let stored: (deviceID: String, secret: String?)?
             do {
@@ -181,6 +193,14 @@ actor SyncEngine {
                     try await client.patchDevice(current.deviceID, patch, secret: secret)
                     // Only what was sent: a change made while the request was in flight goes out next.
                     state.pending.clear(sent: patch)
+                } else if let open, let secret = current.secret {
+                    do {
+                        try await client.postEvent(deviceID: current.deviceID, notificationID: open, secret: secret)
+                    } catch .rejected {
+                        // An unknown or expired notification: the open can never be recorded.
+                        Log.info("Pushwren dropped the open of \(open): the server doesn't know it")
+                    }
+                    state.opens.removeAll { $0 == open }
                 }
                 store.save(state)
                 lastResult = SyncResult(at: now(), error: nil)

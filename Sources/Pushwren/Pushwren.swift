@@ -102,10 +102,18 @@ public enum Pushwren {
         enqueue { await Runtime.shared.didFailToRegister(message: message) }
     }
 
+    /// Records the tap: it appears on `opens`, and a notification sent by Pushwren is counted as opened.
     public static func didReceive(response: UNNotificationResponse) {
-        // Open tracking arrives in a later release; for now the tap is only logged.
-        Log.info("Notification opened: \(response.notification.request.identifier)")
+        let open = OpenedNotification(userInfo: response.notification.request.content.userInfo, actionIdentifier: response.actionIdentifier)
+        OpenBroadcaster.shared.yield(open)
+        guard let id = open.notificationID else { return }
+        Log.info("Notification opened: \(id)")
+        enqueue { await Runtime.shared.engineDo { await $0.recordOpen(id) } }
     }
+
+    /// Every notification the user opens, for deep links. Each `for await` gets every open from
+    /// then on; opens from before anyone was listening (a launch from a tap) go to the first one.
+    public static var opens: AsyncStream<OpenedNotification> { OpenBroadcaster.shared.subscribe() }
 
     // MARK: Internals
 
