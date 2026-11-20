@@ -1,0 +1,66 @@
+# XcodeGen spec for the Pushwren sample app: `xcodegen generate` writes PushwrenSample.xcodeproj.
+# Local.xcconfig (git-ignored) holds your Team ID and a publishable key; see Local.xcconfig.example.
+name: PushwrenSample
+options:
+  bundleIdPrefix: com.pushwren
+  deploymentTarget:
+    iOS: "16.0"
+    macOS: "13.0"
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+packages:
+  Pushwren:
+    path: ../..
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.pushwren.sample
+    PRODUCT_NAME: Pushwren Sample
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+    INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+targetTemplates:
+  Sample:
+    type: application
+    sources: [Sources]
+    dependencies:
+      - package: Pushwren
+    info:
+      path: Generated/${target_name}-Info.plist
+      properties:
+        CFBundleDisplayName: Pushwren Sample
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        PushwrenAppKey: $(PUSHWREN_APP_KEY)
+        ITSAppUsesNonExemptEncryption: false
+targets:
+  PushwrenSample-iOS:
+    templates: [Sample]
+    platform: iOS
+    entitlements:
+      path: PushwrenSample-iOS.entitlements
+      properties:
+        aps-environment: development
+    info:
+      path: Generated/PushwrenSample-iOS-Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1,2"
+  PushwrenSample-macOS:
+    templates: [Sample]
+    platform: macOS
+    entitlements:
+      path: PushwrenSample-macOS.entitlements
+      properties:
+        com.apple.developer.aps-environment: development
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+    settings:
+      base:
+        ENABLE_HARDENED_RUNTIME: YES
+        LSApplicationCategoryType: public.app-category.developer-tools

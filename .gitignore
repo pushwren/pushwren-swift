@@ -6,3 +6,5 @@ xcuserdata/
 DerivedData/
 Examples/PushwrenSample/Local.xcconfig
 Examples/PushwrenSample/build/
+Examples/PushwrenSample/Generated/
+Examples/PushwrenSample/*.entitlements

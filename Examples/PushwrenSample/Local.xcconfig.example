@@ -1,0 +1,4 @@
+// Copy to Local.xcconfig (git-ignored). Your Apple Developer Team ID, and a publishable key
+// from `pnpm admin dev apikey create <appId> --type publishable` (or the portal, later).
+DEVELOPMENT_TEAM = ABCDE12345
+PUSHWREN_APP_KEY = pk_dev_REPLACE_WITH_YOUR_32_CHARACTER_KEY_00

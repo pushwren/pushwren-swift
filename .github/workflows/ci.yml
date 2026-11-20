@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: swift test
+      - name: Build for iOS and Mac Catalyst
+        run: |
+          xcodebuild -scheme Pushwren -destination 'generic/platform=iOS' build -quiet
+          xcodebuild -scheme Pushwren -destination 'platform=macOS,variant=Mac Catalyst' build -quiet
+      - name: Build the sample app
+        working-directory: Examples/PushwrenSample
+        run: |
+          brew install xcodegen
+          cp Local.xcconfig.example Local.xcconfig
+          xcodegen generate
+          xcodebuild -project PushwrenSample.xcodeproj -scheme PushwrenSample-iOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build -quiet
+          xcodebuild -project PushwrenSample.xcodeproj -scheme PushwrenSample-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build -quiet
