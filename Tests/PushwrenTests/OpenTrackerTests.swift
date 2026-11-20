@@ -131,4 +131,24 @@ final class OpenTrackerTests: XCTestCase {
         let first = await it.next()
         XCTAssertEqual(first?.data["n"] as? Int, 2, "the oldest two were dropped")
     }
+
+    func testARejectedPatchIsDroppedAndDoesNotBlockOpens() async {
+        let e = engine()
+        await e.update { [token] in $0.token = token; $0.environment = .sandbox }
+        await e.settle()
+        StubURLProtocol.answer { r in
+            r.request.httpMethod == "PATCH"
+                ? .json(400, ["error": ["code": "invalid_request", "message": "tags: a device may have at most 50 tags"]])
+                : .json(204, [:])
+        }
+        await e.addTags(["one-too-many"])
+        await e.recordOpen(ntf)
+        await e.settle()
+        XCTAssertEqual(StubURLProtocol.recorded.map { $0.request.httpMethod }, ["PATCH", "POST"])
+        XCTAssertNil(store.load()?.pending.patch(), "the rejected change is dropped, not retried forever")
+        XCTAssertEqual(store.load()?.opens, [])
+        await e.setUser("u_2", signature: nil)
+        await e.settle()
+        XCTAssertEqual(StubURLProtocol.recorded.last?.request.httpMethod, "PATCH", "later changes still go out")
+    }
 }

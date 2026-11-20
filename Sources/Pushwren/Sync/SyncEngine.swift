@@ -190,7 +190,13 @@ actor SyncEngine {
                     state.lastSentHost = host
                     Log.info("Registered device \(current.deviceID), token \(Log.tail(payload.token))")
                 } else if let patch, let secret = current.secret {
-                    try await client.patchDevice(current.deviceID, patch, secret: secret)
+                    do {
+                        try await client.patchDevice(current.deviceID, patch, secret: secret)
+                    } catch .rejected(let code, let message) where code != "not_found" {
+                        // The server will never take this change (say, more than 50 tags once its own
+                        // are counted). Drop it rather than block every later change and open behind it.
+                        Log.error("Pushwren dropped a tag or user change the server rejected: \(code): \(message)")
+                    }
                     // Only what was sent: a change made while the request was in flight goes out next.
                     state.pending.clear(sent: patch)
                 } else if let open, let secret = current.secret {
