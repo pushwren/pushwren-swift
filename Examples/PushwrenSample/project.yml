@@ -47,6 +47,8 @@ targets:
       path: Generated/PushwrenSample-iOS-Info.plist
       properties:
         UILaunchScreen: {}
+        # Lets iOS issue a device token before the user allows notifications (silent pushes need it too).
+        UIBackgroundModes: [remote-notification]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     settings:
       base:

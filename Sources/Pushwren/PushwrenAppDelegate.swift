@@ -17,6 +17,7 @@ open class PushwrenAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        application.registerForRemoteNotifications()
         return true
     }
 
@@ -54,6 +55,7 @@ open class PushwrenAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
 open class PushwrenAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     open func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        NSApplication.shared.registerForRemoteNotifications()
     }
 
     open func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

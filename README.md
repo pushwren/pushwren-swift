@@ -15,8 +15,13 @@ then sends to them by device, user or tag.
 
 1. In Xcode, choose **File › Add Package Dependencies…**, paste
    `https://github.com/pushwren/pushwren-swift`, and add the **Pushwren** product to your app target.
-2. Under **Signing & Capabilities**, add **Push Notifications**. Add **Background Modes ›
-   Remote notifications** too if you will send silent pushes.
+2. Under **Signing & Capabilities**, add **Push Notifications**, then add **Background Modes**
+   and tick **Remote notifications**.
+
+   With Remote notifications on, iOS issues the device token at first launch, so the device is
+   registered before you ask for permission, and silent pushes work. Without it, current iOS
+   versions issue the token only once the user allows notifications, and Pushwren registers the
+   device then.
 
 With `Package.swift`, add `.package(url: "https://github.com/pushwren/pushwren-swift", from: "0.1.0")`.
 
