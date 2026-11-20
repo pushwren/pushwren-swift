@@ -63,6 +63,19 @@ final class APIClientTests: XCTestCase {
         }
     }
 
+    func testRetryAfterIsClampedToSaneValues() async {
+        let cases: [(String, TimeInterval)] = [("-1", 60), ("nan", 60), ("inf", 60), ("1e30", 3600), ("0", 1), ("abc", 60), ("120", 120)]
+        for (header, expected) in cases {
+            StubURLProtocol.answer { _ in .json(429, [:], headers: ["Retry-After": header]) }
+            do {
+                _ = try await client().putDevice(deviceID, payload, secret: nil)
+                XCTFail("expected retryAfter")
+            } catch {
+                XCTAssertEqual(error, .retryAfter(expected), header)
+            }
+        }
+    }
+
     func testDeleteSendsTheSecretAndTreatsAMissingDeviceAsDone() async throws {
         for status in [204, 404] {
             StubURLProtocol.answer { _ in .response(status: status) }
@@ -98,15 +111,15 @@ final class APIClientTests: XCTestCase {
         }
     }
 
-    func testMemoryIdentityStoreRoundTrips() {
+    func testMemoryIdentityStoreRoundTrips() throws {
         let store = MemoryIdentityStore()
-        XCTAssertNil(store.load())
+        XCTAssertNil(try store.load())
         store.save(deviceID: deviceID, secret: nil)
-        XCTAssertEqual(store.load()?.deviceID, deviceID)
-        XCTAssertNil(store.load()?.secret)
+        XCTAssertEqual(try store.load()?.deviceID, deviceID)
+        XCTAssertNil(try store.load()?.secret)
         store.save(deviceID: deviceID, secret: "s")
-        XCTAssertEqual(store.load()?.secret, "s")
+        XCTAssertEqual(try store.load()?.secret, "s")
         store.reset()
-        XCTAssertNil(store.load())
+        XCTAssertNil(try store.load())
     }
 }

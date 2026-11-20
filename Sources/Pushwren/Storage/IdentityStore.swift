@@ -2,9 +2,16 @@ import Foundation
 import os
 import Security
 
+/// The Keychain couldn't be read, for example before the first unlock after a reboot. Not the
+/// same as "nothing stored": the identity is there, just not readable yet.
+struct IdentityUnavailable: Error, Equatable {
+    let status: OSStatus
+}
+
 /// Where the device ID and its secret live between launches.
 protocol IdentityStore: Sendable {
-    func load() -> (deviceID: String, secret: String?)?
+    /// nil when nothing is stored; throws when the store can't be read right now.
+    func load() throws -> (deviceID: String, secret: String?)?
     func save(deviceID: String, secret: String?)
     func reset()
 }
@@ -14,9 +21,9 @@ protocol IdentityStore: Sendable {
 struct KeychainIdentityStore: IdentityStore {
     static let service = "com.pushwren.sdk"
 
-    func load() -> (deviceID: String, secret: String?)? {
-        guard let deviceID = read("deviceID") else { return nil }
-        return (deviceID, read("deviceSecret"))
+    func load() throws -> (deviceID: String, secret: String?)? {
+        guard let deviceID = try read("deviceID") else { return nil }
+        return (deviceID, try read("deviceSecret"))
     }
 
     func save(deviceID: String, secret: String?) {
@@ -38,14 +45,19 @@ struct KeychainIdentityStore: IdentityStore {
         ]
     }
 
-    private func read(_ account: String) -> String? {
+    private func read(_ account: String) throws -> String? {
         var query = base(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &out)
-        if status != errSecSuccess && status != errSecItemNotFound { Log.error("Keychain read failed: \(status)") }
-        return (out as? Data).flatMap { String(data: $0, encoding: .utf8) }
+        switch status {
+        case errSecSuccess: return (out as? Data).flatMap { String(data: $0, encoding: .utf8) }
+        case errSecItemNotFound: return nil
+        default:
+            Log.info("Keychain not readable yet (\(status))")
+            throw IdentityUnavailable(status: status)
+        }
     }
 
     private func write(_ account: String, _ value: String) {
@@ -72,7 +84,7 @@ struct KeychainIdentityStore: IdentityStore {
 final class MemoryIdentityStore: IdentityStore {
     private let state = OSAllocatedUnfairLock<(deviceID: String, secret: String?)?>(initialState: nil)
 
-    func load() -> (deviceID: String, secret: String?)? { state.withLock { $0 } }
+    func load() throws -> (deviceID: String, secret: String?)? { state.withLock { $0 } }
     func save(deviceID: String, secret: String?) { state.withLock { $0 = (deviceID, secret) } }
     func reset() { state.withLock { $0 = nil } }
 }

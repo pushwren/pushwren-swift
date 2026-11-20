@@ -32,8 +32,9 @@ actor SyncEngine {
         store: StateStore,
         initial: DeviceState,
         now: @escaping @Sendable () -> Date = { Date() },
-        sleep: @escaping @Sendable (TimeInterval) async -> Void = { s in try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) },
-        debounce: TimeInterval = 1
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = SyncEngine.sleep,
+        debounce: TimeInterval = 1,
+        freshIdentity: Bool = false
     ) {
         self.client = client
         self.identity = identity
@@ -41,11 +42,25 @@ actor SyncEngine {
         self.now = now
         self.sleep = sleep
         self.debounce = debounce
-        self.state = store.load() ?? PersistedState(desired: initial)
+        var state = store.load() ?? PersistedState(desired: initial)
+        if freshIdentity {
+            // No identity in the Keychain but a state file: a backup restored onto another device.
+            // Its token belongs to the old device; keep the user's settings, wait for our own token.
+            state.desired.token = nil
+            state.lastSent = nil
+            state.lastSyncAt = nil
+        }
+        self.state = state
+    }
+
+    /// Waits, clamped to 0...3600 s so a bad value can never trap the conversion.
+    static let sleep: @Sendable (TimeInterval) async -> Void = { seconds in
+        let s = seconds.isFinite ? min(max(seconds, 0), 3600) : 60
+        try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000))
     }
 
     var desired: DeviceState { state.desired }
-    var deviceID: String? { identity.load()?.deviceID }
+    var deviceID: String? { (try? identity.load())??.deviceID }
 
     /// Applies a change, saves it, and schedules a sync. A change that changes nothing does nothing.
     func update(_ change: @Sendable (inout DeviceState) -> Void) {
@@ -91,7 +106,16 @@ actor SyncEngine {
             let stale = state.lastSyncAt.map { now().timeIntervalSince($0) > Self.refreshInterval } ?? true
             guard payload != state.lastSent || stale else { return }
 
-            let current = identity.load() ?? {
+            let stored: (deviceID: String, secret: String?)?
+            do {
+                stored = try identity.load()
+            } catch {
+                // Never mint a new identity over one we merely can't read yet. The change stays
+                // saved and goes out at the next launch, change or foreground.
+                lastResult = SyncResult(at: now(), error: .transient)
+                return
+            }
+            let current = stored ?? {
                 let fresh = (deviceID: ULID.deviceID(now: now()), secret: String?.none)
                 identity.save(deviceID: fresh.deviceID, secret: nil)
                 return fresh

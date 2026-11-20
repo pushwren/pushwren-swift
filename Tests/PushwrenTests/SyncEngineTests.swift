@@ -20,6 +20,15 @@ final class SleepRecorder: @unchecked Sendable {
 
 private let testToken = String(repeating: "a", count: 64)
 
+/// A Keychain that can't be read, as before the first unlock after a reboot.
+final class LockedIdentityStore: IdentityStore, @unchecked Sendable {
+    private let count = OSAllocatedUnfairLock(initialState: 0)
+    var saves: Int { count.withLock { $0 } }
+    func load() throws -> (deviceID: String, secret: String?)? { throw IdentityUnavailable(status: -25308) }
+    func save(deviceID: String, secret: String?) { count.withLock { $0 += 1 } }
+    func reset() {}
+}
+
 final class SyncEngineTests: XCTestCase {
     private let key = AppKey("pk_dev_AbCdEfGhIjKlMnOpQrStUvWxYz012345")!
     private let base = DeviceState(platform: .ios, bundleId: "com.pushwren.sample", sdkVersion: "0.1.0")
@@ -46,7 +55,7 @@ final class SyncEngineTests: XCTestCase {
         }
     }
 
-    private func engine(debounce: TimeInterval = 0, realSleep: Bool = false) -> SyncEngine {
+    private func engine(debounce: TimeInterval = 0, realSleep: Bool = false, freshIdentity: Bool = false, identityStore: IdentityStore? = nil) -> SyncEngine {
         let clock = self.clock!
         let sleeper = self.sleeper!
         let sleep: @Sendable (TimeInterval) async -> Void
@@ -57,12 +66,13 @@ final class SyncEngineTests: XCTestCase {
         }
         return SyncEngine(
             client: APIClient(key: key, session: StubURLProtocol.session()),
-            identity: identity,
+            identity: identityStore ?? identity,
             store: store,
             initial: base,
             now: { clock.now },
             sleep: sleep,
-            debounce: debounce
+            debounce: debounce,
+            freshIdentity: freshIdentity
         )
     }
 
@@ -152,8 +162,8 @@ final class SyncEngineTests: XCTestCase {
         let e = engine()
         await e.update { $0.token = testToken; $0.environment = .sandbox }
         await e.settle()
-        XCTAssertNotEqual(identity.load()?.deviceID, "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA")
-        XCTAssertEqual(identity.load()?.secret, "fresh")
+        XCTAssertNotEqual((try? identity.load())??.deviceID, "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA")
+        XCTAssertEqual((try? identity.load())??.secret, "fresh")
     }
 
     func testRetryAfterIsHonored() async {
@@ -192,10 +202,46 @@ final class SyncEngineTests: XCTestCase {
         let e = engine()
         await e.update { $0.token = testToken; $0.environment = .sandbox }
         await e.settle()
-        let saved = identity.load()
+        let saved = (try? identity.load()) ?? nil
         XCTAssertNotNil(saved?.deviceID.range(of: "^dev_[0-9A-HJKMNP-TV-Z]{26}$", options: .regularExpression))
         XCTAssertEqual(saved?.secret, "secret-1")
         XCTAssertEqual(StubURLProtocol.recorded.first?.request.url?.lastPathComponent, saved?.deviceID)
+    }
+
+    func testALockedKeychainSendsNothingAndMintsNoNewIdentity() async {
+        let locked = LockedIdentityStore()
+        let e = engine(identityStore: locked)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(StubURLProtocol.recorded.count, 0)
+        XCTAssertEqual(locked.saves, 0, "never replace an identity we couldn't read")
+        XCTAssertNil(store.load()?.lastSent, "the change stays pending")
+    }
+
+    func testAFreshIdentityDropsATokenRestoredFromAnotherDevice() async {
+        // A backup restored onto a new phone brings the state file but not the Keychain.
+        var restored = PersistedState(desired: base)
+        restored.desired.token = String(repeating: "b", count: 64)
+        restored.desired.environment = .production
+        restored.desired.userId = "u_1"
+        restored.lastSent = restored.desired.payload()
+        restored.lastSyncAt = clock.now.addingTimeInterval(-30 * 86_400)
+        store.save(restored)
+        let e = engine(freshIdentity: true)
+        await e.syncIfNeeded()
+        XCTAssertEqual(StubURLProtocol.recorded.count, 0, "the old phone's token is never sent")
+        await e.update { $0.token = testToken }
+        await e.settle()
+        XCTAssertEqual(StubURLProtocol.recorded.count, 1)
+        XCTAssertEqual(sentBodies.first?["token"] as? String, testToken)
+        XCTAssertEqual(sentBodies.first?["userId"] as? String, "u_1", "the user's own settings come along")
+    }
+
+    func testEachAppKeepsItsOwnStateFile() {
+        let a = FileStateStore.standard(bundleID: "com.example.a").directory.path
+        let b = FileStateStore.standard(bundleID: "com.example.b").directory.path
+        XCTAssertNotEqual(a, b)
+        XCTAssertTrue(a.hasSuffix("Pushwren/com.example.a"), a)
     }
 
     func testFileStateStoreRoundTrips() throws {

@@ -7,15 +7,16 @@ protocol StateStore: Sendable {
 }
 
 /// A JSON file of the SDK's own in Application Support, written atomically. Not UserDefaults, so
-/// the privacy manifest needs no required-reason declaration.
+/// the privacy manifest needs no required-reason declaration. Each app has its own folder:
+/// non-sandboxed Mac apps share one Application Support directory.
 struct FileStateStore: StateStore {
     let directory: URL
     private var file: URL { directory.appendingPathComponent("state.json") }
 
-    static func standard() -> FileStateStore {
+    static func standard(bundleID: String) -> FileStateStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return FileStateStore(directory: base.appendingPathComponent("Pushwren", isDirectory: true))
+        return FileStateStore(directory: base.appendingPathComponent("Pushwren", isDirectory: true).appendingPathComponent(bundleID, isDirectory: true))
     }
 
     func load() -> PersistedState? {

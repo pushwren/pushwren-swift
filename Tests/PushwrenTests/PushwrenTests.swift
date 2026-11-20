@@ -33,10 +33,38 @@ final class PushwrenTests: XCTestCase {
         XCTAssertEqual(registered.withLock { $0 }, 0)
     }
 
-    func testConfigureStartsTheRuntimeAndRegistersForRemoteNotifications() {
+    func testConfigureStartsTheRuntimeAndRegistersOnTheNextMainLoopTurn() async {
         Pushwren.configure(appKey: devKey)
         XCTAssertEqual(started.withLock { $0 }, [devKey])
+        // SwiftUI runs App.init before UIApplication exists, so registering there would go nowhere.
+        XCTAssertEqual(registered.withLock { $0 }, 0)
+        for _ in 0..<50 where registered.withLock({ $0 }) == 0 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(registered.withLock { $0 }, 1)
+    }
+
+    func testInvalidTagsAreDroppedNotSaved() {
+        let long = String(repeating: "x", count: 65)
+        XCTAssertEqual(Pushwren.cleanTags([" ok ", "Team Warriors", "é", "a\n", long, "", "pro:1.0_b-c"]), ["ok", "a", "pro:1.0_b-c"])
+    }
+
+    func testTagsAreCappedAt50() {
+        let existing = (0..<49).map { "t\($0)" }
+        let merged = Pushwren.merge(tags: existing, adding: ["new1", "new2", "new3"])
+        XCTAssertEqual(merged.count, 50)
+        XCTAssertTrue(Set(existing).isSubset(of: Set(merged)), "existing tags are kept")
+    }
+
+    func testUserIDsAndSignaturesAreValidatedBeforeTheyAreSaved() {
+        XCTAssertTrue(Pushwren.isValidUserID("u_123"))
+        for bad in ["", String(repeating: "u", count: 129), "u\u{0}1", "line\nbreak"] {
+            XCTAssertFalse(Pushwren.isValidUserID(bad), bad)
+        }
+        let hex = String(repeating: "AB", count: 32)
+        XCTAssertEqual(Pushwren.normalizedSignature(hex), hex.lowercased())
+        XCTAssertNil(Pushwren.normalizedSignature("not-hex"))
+        XCTAssertNil(Pushwren.normalizedSignature(String(repeating: "a", count: 63)))
     }
 
     func testConfigureReturnsInUnder5ms() {

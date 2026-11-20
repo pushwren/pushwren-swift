@@ -22,7 +22,10 @@ public enum Pushwren {
             return
         }
         hooks.start(key, environment)
-        hooks.registerForRemoteNotifications()
+        // SwiftUI runs App.init before UIApplication exists, so asking for a token here would go
+        // nowhere. The next turn of the main run loop is after launch, and the delegate is set.
+        let register = hooks.registerForRemoteNotifications
+        DispatchQueue.main.async { MainActor.assumeIsolated { register() } }
     }
 
     /// How much Pushwren writes to the unified log (subsystem com.pushwren.sdk).
@@ -49,6 +52,15 @@ public enum Pushwren {
     /// Links this device to a user of your app. `signature` is needed only when the app has
     /// identity verification on: HMAC-SHA256 of the user ID, as hex, made by your server.
     public static func setUserID(_ userID: String, signature: String? = nil) {
+        guard isValidUserID(userID) else {
+            Log.error("Pushwren.setUserID ignored: a user ID is 1 to 128 characters with no control characters")
+            return
+        }
+        let signature = signature.flatMap { s -> String? in
+            if let clean = normalizedSignature(s) { return clean }
+            Log.error("Pushwren.setUserID: the signature isn't 64 hex characters (HMAC-SHA256); sending the user ID without it")
+            return nil
+        }
         enqueue { await Runtime.shared.apply { $0.userId = userID; $0.userIdSignature = signature } }
     }
 
@@ -57,9 +69,10 @@ public enum Pushwren {
         enqueue { await Runtime.shared.apply { $0.userId = nil; $0.userIdSignature = nil } }
     }
 
+    /// Tags are 1 to 64 letters, digits and _ . : -, at most 50 per device. Others are dropped and logged.
     public static func addTags(_ tags: [String]) {
         let clean = cleanTags(tags)
-        enqueue { await Runtime.shared.apply { $0.tags = Array(Set($0.tags).union(clean)).sorted() } }
+        enqueue { await Runtime.shared.apply { $0.tags = merge(tags: $0.tags, adding: clean) } }
     }
 
     public static func removeTags(_ tags: [String]) {
@@ -70,7 +83,7 @@ public enum Pushwren {
     // MARK: Debugging
 
     /// This device's Pushwren ID, to find it in the portal. nil before the first `configure`.
-    public static var deviceID: String? { KeychainIdentityStore().load()?.deviceID }
+    public static var deviceID: String? { (try? KeychainIdentityStore().load())??.deviceID }
 
     /// What Pushwren knows about this device: ID, token (last 8 characters), environment,
     /// permission, API host and the last sync.
@@ -117,8 +130,43 @@ public enum Pushwren {
 
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
+    static let maxTags = 50
+
+    /// Trimmed tags that the server will accept; anything else is logged and dropped, so one bad
+    /// tag can never block the device's registration.
     static func cleanTags(_ tags: [String]) -> [String] {
-        tags.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        var clean: [String] = []
+        for tag in tags.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !tag.isEmpty {
+            if tag.range(of: "^[A-Za-z0-9_.:-]{1,64}$", options: .regularExpression) != nil {
+                clean.append(tag)
+            } else {
+                Log.error("Pushwren dropped the tag \"\(tag)\": tags are 1 to 64 letters, digits and _ . : -")
+            }
+        }
+        return clean
+    }
+
+    /// The device's tags plus new ones, at most 50. Existing tags win.
+    static func merge(tags: [String], adding: [String]) -> [String] {
+        var result = tags
+        for tag in adding where !result.contains(tag) {
+            guard result.count < maxTags else {
+                Log.error("Pushwren dropped the tag \"\(tag)\": a device has at most \(maxTags) tags")
+                continue
+            }
+            result.append(tag)
+        }
+        return result.sorted()
+    }
+
+    static func isValidUserID(_ id: String) -> Bool {
+        (1...128).contains(id.count) && !id.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
+
+    /// An HMAC-SHA256 signature as the server wants it: 64 lowercase hex characters, or nil.
+    static func normalizedSignature(_ signature: String) -> String? {
+        let s = signature.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return s.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil ? s : nil
     }
 
     static func refreshPermissionStatus() {
@@ -207,15 +255,26 @@ actor Runtime {
         }
 
         let identity = KeychainIdentityStore()
-        if identity.load() == nil { identity.save(deviceID: ULID.deviceID(), secret: nil) }
+        let freshIdentity: Bool
+        do {
+            freshIdentity = try identity.load() == nil
+        } catch {
+            // Before the first unlock after a reboot. Try again once protected data is readable;
+            // changes made meanwhile are held in `pending`.
+            Log.info("Pushwren will start once the device is unlocked")
+            retryStartWhenUnlocked(key: key, override: override)
+            return
+        }
+        if freshIdentity { identity.save(deviceID: ULID.deviceID(), secret: nil) }
 
         let platform = Platform.current
         let bundleID = Bundle.main.bundleIdentifier ?? ""
         let engine = SyncEngine(
             client: APIClient(key: key),
             identity: identity,
-            store: FileStateStore.standard(),
-            initial: DeviceState(platform: platform, bundleId: bundleID, sdkVersion: SDK.version)
+            store: FileStateStore.standard(bundleID: bundleID.isEmpty ? "app" : bundleID),
+            initial: DeviceState(platform: platform, bundleId: bundleID, sdkVersion: SDK.version),
+            freshIdentity: freshIdentity
         )
         self.engine = engine
 
@@ -264,7 +323,7 @@ actor Runtime {
         let desired = await engine?.desired
         let result = await engine?.lastResult
         return Diagnostics(
-            deviceID: await engine?.deviceID ?? KeychainIdentityStore().load()?.deviceID,
+            deviceID: await engine?.deviceID ?? (try? KeychainIdentityStore().load())??.deviceID,
             token: desired?.token,
             environment: desired?.environment,
             environmentWarning: detection?.warning,
@@ -273,6 +332,26 @@ actor Runtime {
             lastSync: result?.error == nil ? result?.at : nil,
             lastError: registrationError ?? result?.error.map { "\($0)" }
         )
+    }
+
+    private var waitingForUnlock = false
+
+    private func retryStartWhenUnlocked(key: AppKey, override: ApsEnvironment?) {
+        guard !waitingForUnlock else { return }
+        waitingForUnlock = true
+        #if canImport(UIKit)
+        let name = UIApplication.protectedDataDidBecomeAvailableNotification
+        #elseif canImport(AppKit)
+        let name = NSApplication.didBecomeActiveNotification
+        #endif
+        _ = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
+            Pushwren.enqueue { await Runtime.shared.retryStart(key: key, override: override) }
+        }
+    }
+
+    private func retryStart(key: AppKey, override: ApsEnvironment?) async {
+        waitingForUnlock = false
+        await start(key: key, override: override)
     }
 
     /// Permission can change in Settings while the app is away: re-read it on every return.

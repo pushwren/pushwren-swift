@@ -114,6 +114,13 @@ struct APIClient: Sendable {
         }
     }
 
+    /// Retry-After in seconds, kept between 1 s and an hour. A missing, negative or non-numeric
+    /// value means a minute; NaN or infinity would otherwise crash the wait.
+    static func retryAfter(_ header: String?) -> TimeInterval {
+        guard let value = header.flatMap(TimeInterval.init), value.isFinite, value >= 0 else { return 60 }
+        return min(max(value, 1), 3600)
+    }
+
     private func send(_ method: String, _ deviceID: String, body: Data?, secret: String?) async throws(APIError) -> (Int, Data) {
         var request = URLRequest(url: key.apiBaseURL.appendingPathComponent("v1/devices/\(deviceID)"), timeoutInterval: 15)
         request.httpMethod = method
@@ -143,7 +150,7 @@ struct APIClient: Sendable {
             throw .rejected(code: "not_found", message: "not found")
         case 429:
             let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
-            throw .retryAfter(header.flatMap(TimeInterval.init) ?? 60)
+            throw .retryAfter(Self.retryAfter(header))
         case 400..<500:
             struct Failure: Decodable {
                 struct Body: Decodable { let code: String; let message: String }
