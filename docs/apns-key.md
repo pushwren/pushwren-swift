@@ -104,7 +104,7 @@ Pushwren checks the key with Apple straight away and shows a result for **Sandbo
 The check can't see a Topic Specific key's list of apps. If the key doesn't include your app, the
 first test push tells you.
 
-<!-- screenshot: the upload form, Team ID covered -->
+![The upload form with a Sandbox & Production key: the Key ID filled in from the file name, and Valid for sandbox and production](images/apns-key/07-upload.png)
 
 ## When something goes wrong
 
