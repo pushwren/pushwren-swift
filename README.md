@@ -26,7 +26,7 @@ then sends to them by device, user or tag.
      Pushwren registers the device then, and silent pushes don't wake the app.
 
 If you use `Package.swift` instead of Xcode, add
-`.package(url: "https://github.com/pushwren/pushwren-swift", from: "0.2.0")`.
+`.package(url: "https://github.com/pushwren/pushwren-swift", from: "0.2.1")`.
 
 ## Use
 
