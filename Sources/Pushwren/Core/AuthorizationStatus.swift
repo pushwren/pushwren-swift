@@ -17,3 +17,14 @@ public enum AuthorizationStatus: String, Sendable, Codable {
         }
     }
 }
+
+extension AuthorizationStatus {
+    /// The app's current notification permission.
+    ///
+    /// Nonisolated on purpose: `UNNotificationSettings` isn't `Sendable` in the Xcode 16 SDKs, so an
+    /// actor that awaited `notificationSettings()` itself would fail to compile there. Only this
+    /// `Sendable` enum crosses back to the caller.
+    static func current() async -> AuthorizationStatus {
+        AuthorizationStatus(await UNUserNotificationCenter.current().notificationSettings().authorizationStatus)
+    }
+}

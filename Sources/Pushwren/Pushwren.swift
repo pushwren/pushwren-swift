@@ -42,7 +42,7 @@ public enum Pushwren {
         var options: UNAuthorizationOptions = [.alert, .badge, .sound]
         if provisional { options.insert(.provisional) }
         _ = try await UNUserNotificationCenter.current().requestAuthorization(options: options)
-        let status = AuthorizationStatus(await UNUserNotificationCenter.current().notificationSettings().authorizationStatus)
+        let status = await AuthorizationStatus.current()
         enqueue { await Runtime.shared.apply { $0.authorizationStatus = status } }
         return status
     }
@@ -329,7 +329,7 @@ actor Runtime {
 
     func refreshPermission() async {
         guard engine != nil else { return }
-        let status = AuthorizationStatus(await UNUserNotificationCenter.current().notificationSettings().authorizationStatus)
+        let status = await AuthorizationStatus.current()
         await apply { $0.authorizationStatus = status }
     }
 
