@@ -87,7 +87,7 @@ Never put it in your app or commit it to a repository: anyone with the file can 
 your apps. If you lose it, revoke the key and make a new one.
 
 The **Key ID** is the 10 characters in the file name (`AuthKey_ABC123DEFG.p8` has the Key ID
-`ABC123DEFG`). It's also shown under the key's name in **Keys**.
+`ABC123DEFG`). It's also in the **Key ID** column of the **Keys** list.
 
 ## 5. Upload it to Pushwren
 
@@ -110,8 +110,8 @@ first test push tells you.
 
 | Pushwren says | What it means | What to do |
 | --- | --- | --- |
-| **Not enabled for sandbox** (or production) | The key works in the other environment only. | Apple doesn't let you change a key's environment. Make a key for the missing environment (or a new Sandbox & Production key) and upload it too. |
+| **Not enabled for sandbox** (or production), or **Key not enabled for sandbox** after a send | The key works in the other environment only. | Apple doesn't let you change a key's environment. Make a key for the missing environment (or a new Sandbox & Production key) and upload it too. |
 | **Check the Key ID and Team ID** | Apple didn't accept this key with these IDs. | Copy the Key ID from the file name and the Team ID from Membership details, and make sure the `.p8` is the file for that key. |
-| **Key doesn't cover this app** | The key is Topic Specific, and your bundle ID isn't one of its apps. | Make a Team Scoped key and upload it. |
+| **Key not allowed for this app** (after a test push), or **Key doesn't cover this app** | The key is Topic Specific, and your bundle ID isn't one of its apps. | Make a Team Scoped key and upload it. |
 | **Not yet verified** | Apple's answer didn't settle it. | Send a test push from the portal to confirm. |
 | Every push fails after working before | The key was revoked on developer.apple.com. | Make a new key and upload it in **Settings → APNs**. |
