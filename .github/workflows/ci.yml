@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    runs-on: macos-15
+    runs-on: macos-15-intel  # arm64 macOS runners were at capacity (2026-11-23); same image, Xcode 16.4
     steps:
       - uses: actions/checkout@v4
       - name: Unit tests
