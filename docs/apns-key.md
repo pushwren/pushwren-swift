@@ -19,12 +19,11 @@ Identifiers & Profiles**.
 
 ## 1. Find your Team ID
 
-Open [developer.apple.com/account](https://developer.apple.com/account) and scroll to
-**Membership details**. Your **Team ID** is a 10-character code such as `ABCDE12345`. Keep it handy;
-Pushwren asks for it with the key.
+Open **Certificates, Identifiers & Profiles**. Your **Team ID** is at the top right of every page,
+after your name: a 10-character code such as `ABCDE12345`. (It's also under **Membership details**
+on your account page.) Keep it handy; Pushwren asks for it with the key.
 
-<!-- verify: Team ID label and location on the account page -->
-<!-- screenshot: Membership details, Team ID covered -->
+![The top right of Certificates, Identifiers & Profiles, showing "Your Name - ABCDE12345"](images/apns-key/01-team-id.png)
 
 ## 2. Turn on Push Notifications for your app
 
@@ -40,29 +39,48 @@ Apple warns about changing it).
 
 You don't need a push certificate. Keys replace certificates, and Pushwren uses keys only.
 
-<!-- verify: automatic signing turns on Push Notifications for the App ID -->
-<!-- screenshot: the App ID with Push Notifications ticked -->
+<!-- verify: automatic signing turns on Push Notifications for the App ID (checked during the TracQR integration) -->
 
 ## 3. Create the key
 
-1. In Certificates, Identifiers & Profiles, click **Keys** in the sidebar, then the **+** button.
-2. Under **Key Name**, enter a name you'll recognize later, such as `Pushwren`.
-3. Tick **Apple Push Notifications service (APNs)** and click **Configure** next to it.
-4. Choose the options:
-   - **Environment: Sandbox & Production.** Builds you run from Xcode use the sandbox; TestFlight
-     and App Store builds use production. A key for both works for every build. A sandbox-only key
-     fails for TestFlight and App Store builds, and a production-only key fails for Xcode builds.
-   - **Key type: Team Scoped.** It covers every app on your team, now and later. A **Topic
-     Specific** key covers only the apps you pick, and must include your app's bundle ID.
-5. Click **Save**, then **Continue**, review, and click **Register** (or **Confirm**).
+1. In Certificates, Identifiers & Profiles, click **Keys** in the sidebar, then the blue **+** next
+   to the Keys heading.
+2. Under **Key Name**, enter a name you'll recognize later, such as `Pushwren`. The description is
+   optional.
+3. Tick **Apple Push Notifications service (APNs)**. Apple shows "This service must have
+   environment and type configured" until you do the next step. Click **Configure**.
 
-<!-- verify: exact labels for the environment choice, the key type, and the final button -->
-<!-- screenshot: the key name and APNs ticked -->
-<!-- screenshot: Configure, with both choices -->
+   ![Register a New Key, with APNs ticked and its Configure button](images/apns-key/02-new-key.png)
+
+4. On **Configure Key**, set the two menus. **These can't be changed once saved**, so check them
+   before you click Save:
+   - **Environment: Sandbox & Production.** Apple selects **Sandbox** by default, so change it.
+     Builds you run from Xcode use the sandbox; TestFlight and App Store builds use production. A
+     key for both works for every build, while a Sandbox key fails for TestFlight and App Store
+     builds and a Production key fails for Xcode builds.
+   - **Key Restriction: Team Scoped (All Topics).** It covers every app on your team, now and later.
+     With Sandbox & Production it's the only choice.
+
+   ![The Environment menu open, with Sandbox, Production and Sandbox & Production](images/apns-key/03-environment.png)
+
+   After you choose Sandbox & Production, Apple suggests separate keys for each environment.
+   Pushwren works either way: one key for both is simplest, and if you'd rather follow Apple's
+   suggestion, make a Sandbox key and a Production key and upload both to the same app.
+
+   ![Configure Key with Sandbox & Production and Team Scoped (All Topics)](images/apns-key/04-configure.png)
+
+5. Click **Save**. Back on Register a New Key, APNs now shows **Edit**. Click **Continue**, check
+   the summary, and click **Register**.
+
+   ![The summary before Register](images/apns-key/05-register.png)
 
 ## 4. Download the key
 
-Click **Download**. Apple saves a file named `AuthKey_<KeyID>.p8` to your Downloads folder.
+**Download Your Key** shows the key's name and **Key ID**. Click **Download**: Apple saves a file
+named `AuthKey_<KeyID>.p8` to your Downloads folder, and the button changes to **Downloaded**. Then
+click **Done**.
+
+![Download Your Key, with the Key ID ABC123DEFG and the Download button](images/apns-key/06-download.png)
 
 **You can download a key only once.** Keep the file somewhere safe, such as your password manager.
 Never put it in your app or commit it to a repository: anyone with the file can send notifications as
@@ -70,8 +88,6 @@ your apps. If you lose it, revoke the key and make a new one.
 
 The **Key ID** is the 10 characters in the file name (`AuthKey_ABC123DEFG.p8` has the Key ID
 `ABC123DEFG`). It's also shown under the key's name in **Keys**.
-
-<!-- screenshot: the download page -->
 
 ## 5. Upload it to Pushwren
 
@@ -94,8 +110,8 @@ first test push tells you.
 
 | Pushwren says | What it means | What to do |
 | --- | --- | --- |
-| **Not enabled for sandbox** (or production) | The key works in the other environment only. | Edit the key on developer.apple.com to cover both, or upload a second key. |
+| **Not enabled for sandbox** (or production) | The key works in the other environment only. | Apple doesn't let you change a key's environment. Make a key for the missing environment (or a new Sandbox & Production key) and upload it too. |
 | **Check the Key ID and Team ID** | Apple didn't accept this key with these IDs. | Copy the Key ID from the file name and the Team ID from Membership details, and make sure the `.p8` is the file for that key. |
-| **Key doesn't cover this app** | The key is Topic Specific, and your bundle ID isn't one of its apps. | Edit the key to include the app, or make a Team Scoped key. |
+| **Key doesn't cover this app** | The key is Topic Specific, and your bundle ID isn't one of its apps. | Make a Team Scoped key and upload it. |
 | **Not yet verified** | Apple's answer didn't settle it. | Send a test push from the portal to confirm. |
 | Every push fails after working before | The key was revoked on developer.apple.com. | Make a new key and upload it in **Settings → APNs**. |
