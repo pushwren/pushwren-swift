@@ -44,6 +44,22 @@ struct DevicePayload: Codable, Equatable, Sendable {
     }
 }
 
+/// A registration's JSON: the payload's fields, plus an empty tag list when asked.
+struct RegisterBody: Encodable {
+    let payload: DevicePayload
+    let clearTags: Bool
+
+    private enum Keys: String, CodingKey { case tags }
+
+    func encode(to encoder: Encoder) throws {
+        try payload.encode(to: encoder)
+        if clearTags {
+            var c = encoder.container(keyedBy: Keys.self)
+            try c.encode([String](), forKey: .tags)
+        }
+    }
+}
+
 enum APIError: Error, Equatable, Sendable {
     /// 403: the device secret is missing or wrong.
     case forbidden
@@ -87,10 +103,11 @@ struct APIClient: Sendable {
     }()
 
     /// Registers or updates the device. Returns the device secret when the server created the
-    /// device (201), nil when it updated it.
-    func putDevice(_ deviceID: String, _ payload: DevicePayload, secret: String?) async throws(APIError) -> String? {
+    /// device (201), nil when it updated it. `clearTags` sends `"tags": []`, which replaces the
+    /// server's tags with none: after a reinstall, so the old install's tags don't linger.
+    func putDevice(_ deviceID: String, _ payload: DevicePayload, secret: String?, clearTags: Bool = false) async throws(APIError) -> String? {
         let body: Data
-        do { body = try Self.encoder.encode(payload) } catch { throw .rejected(code: "encoding", message: "\(error)") }
+        do { body = try Self.encoder.encode(RegisterBody(payload: payload, clearTags: clearTags)) } catch { throw .rejected(code: "encoding", message: "\(error)") }
         let (status, data) = try await send("PUT", "v1/devices/\(deviceID)", body: body, secret: secret)
         guard status == 201 else { return nil }
         struct Created: Decodable { let deviceSecret: String }
@@ -152,6 +169,16 @@ struct APIClient: Sendable {
         case 401:
             throw .invalidKey
         case 403:
+            // "forbidden" means the device secret is missing or wrong. Any other code is about the
+            // request (say invalid_user_signature, with identity verification on): a rejection, so
+            // the device keeps its identity.
+            struct Failure: Decodable {
+                struct Body: Decodable { let code: String; let message: String }
+                let error: Body
+            }
+            if let failure = try? JSONDecoder().decode(Failure.self, from: data), failure.error.code != "forbidden" {
+                throw .rejected(code: failure.error.code, message: failure.error.message)
+            }
             throw .forbidden
         case 404:
             throw .rejected(code: "not_found", message: "not found")

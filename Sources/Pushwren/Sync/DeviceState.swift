@@ -57,6 +57,8 @@ struct PersistedState: Codable, Equatable, Sendable {
     var pending = PendingChanges()
     /// Notification IDs whose opens haven't reached the server yet.
     var opens: [String] = []
+    /// The app was reinstalled: the next registration replaces the server's tags with none (0.3.0).
+    var clearServerTags = false
 
     init(desired: DeviceState, lastSent: DevicePayload? = nil, lastSyncAt: Date? = nil) {
         self.desired = desired
@@ -65,7 +67,7 @@ struct PersistedState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens
+        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens, clearServerTags
     }
 
     /// Reads version 1 files too: their tags and user already reached the server inside the
@@ -79,6 +81,7 @@ struct PersistedState: Codable, Equatable, Sendable {
         lastSentHost = try c.decodeIfPresent(String.self, forKey: .lastSentHost)
         pending = try c.decodeIfPresent(PendingChanges.self, forKey: .pending) ?? PendingChanges()
         opens = try c.decodeIfPresent([String].self, forKey: .opens) ?? []
+        clearServerTags = try c.decodeIfPresent(Bool.self, forKey: .clearServerTags) ?? false
         version = 2
     }
 }

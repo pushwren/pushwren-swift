@@ -80,6 +80,17 @@ public enum Pushwren {
         enqueue { await Runtime.shared.engineDo { await $0.removeTags(clean) } }
     }
 
+    /// Deletes this device's record from Pushwren, with its user ID and tags: call it when a user
+    /// deletes their account. The device registers again, as a new device with no user, the next
+    /// time the app syncs. Returns false when Pushwren couldn't be reached; nothing is forgotten then.
+    @discardableResult
+    public static func deleteDevice() async -> Bool {
+        // On the same queue as every other call, so a setUserID made before it is applied first.
+        await withCheckedContinuation { done in
+            enqueue { done.resume(returning: await Runtime.shared.deleteDevice()) }
+        }
+    }
+
     // MARK: Debugging
 
     /// This device's Pushwren ID, to find it in the portal. nil before the first `configure`.
@@ -225,6 +236,22 @@ public struct Diagnostics: Sendable, CustomStringConvertible {
         self.lastError = lastError
     }
 
+    /// The last sync: this launch's, or the last one saved from any launch.
+    static func lastSync(result: SyncResult?, saved: Date?) -> Date? {
+        if let result, result.error == nil { return result.at }
+        return saved
+    }
+
+    /// What went wrong last: registering with APNs, the latest sync, or a change the server refused.
+    static func lastError(registration: String?, result: SyncResult?, rejected: SyncResult?) -> String? {
+        if let registration { return registration }
+        if let error = result?.error { return "\(error)" }
+        if case let .rejected(code, message)? = rejected?.error {
+            return "dropped a change the server rejected: \(code): \(message)"
+        }
+        return nil
+    }
+
     public var description: String {
         [
             "Pushwren \(SDK.version)",
@@ -336,6 +363,8 @@ actor Runtime {
     func diagnostics() async -> Diagnostics {
         let desired = await engine?.desired
         let result = await engine?.lastResult
+        let saved = await engine?.lastSyncAt
+        let rejected = await engine?.lastRejected
         return Diagnostics(
             deviceID: await engine?.deviceID ?? (try? KeychainIdentityStore().load())??.deviceID,
             token: desired?.token,
@@ -343,9 +372,14 @@ actor Runtime {
             environmentWarning: detection?.warning,
             permission: desired?.authorizationStatus,
             apiHost: key?.apiBaseURL.host,
-            lastSync: result?.error == nil ? result?.at : nil,
-            lastError: registrationError ?? result?.error.map { "\($0)" }
+            lastSync: Diagnostics.lastSync(result: result, saved: saved),
+            lastError: Diagnostics.lastError(registration: registrationError, result: result, rejected: rejected)
         )
+    }
+
+    func deleteDevice() async -> Bool {
+        guard let engine else { return false }
+        return await engine.deleteRecord()
     }
 
     private var waitingForUnlock = false

@@ -3,6 +3,8 @@ import os
 
 protocol StateStore: Sendable {
     func load() -> PersistedState?
+    /// Whether a state file exists, readable or not: a file we can't decode isn't a reinstall.
+    var exists: Bool { get }
     func save(_ state: PersistedState)
 }
 
@@ -18,6 +20,8 @@ struct FileStateStore: StateStore {
             ?? FileManager.default.temporaryDirectory
         return FileStateStore(directory: base.appendingPathComponent("Pushwren", isDirectory: true).appendingPathComponent(bundleID, isDirectory: true))
     }
+
+    var exists: Bool { FileManager.default.fileExists(atPath: file.path) }
 
     func load() -> PersistedState? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -38,5 +42,6 @@ struct FileStateStore: StateStore {
 final class MemoryStateStore: StateStore {
     private let state = OSAllocatedUnfairLock<PersistedState?>(initialState: nil)
     func load() -> PersistedState? { state.withLock { $0 } }
+    var exists: Bool { state.withLock { $0 != nil } }
     func save(_ s: PersistedState) { state.withLock { $0 = s } }
 }

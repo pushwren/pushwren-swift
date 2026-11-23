@@ -43,9 +43,14 @@ struct PendingChanges: Codable, Equatable, Sendable {
 
     /// Forgets what `sent` carried, keeping any change made while it was in flight.
     mutating func clear(sent: DevicePatch) {
+        clearTags(sent: sent)
+        if user == sent.user { user = nil }
+    }
+
+    /// Forgets only the tag changes `sent` carried: its user change stays pending.
+    mutating func clearTags(sent: DevicePatch) {
         add.subtract(sent.addTags.filter { add.contains($0) })
         remove.subtract(sent.removeTags.filter { remove.contains($0) })
-        if user == sent.user { user = nil }
     }
 }
 

@@ -29,6 +29,13 @@ final class LockedIdentityStore: IdentityStore, @unchecked Sendable {
     func reset() {}
 }
 
+/// A state file that exists but can't be decoded (a downgrade, say).
+final class UnreadableStateStore: StateStore, @unchecked Sendable {
+    func load() -> PersistedState? { nil }
+    var exists: Bool { true }
+    func save(_ state: PersistedState) {}
+}
+
 final class SyncEngineTests: XCTestCase {
     private let key = AppKey("pk_dev_AbCdEfGhIjKlMnOpQrStUvWxYz012345")!
     private let base = DeviceState(platform: .ios, bundleId: "com.pushwren.sample", sdkVersion: "0.1.0")
@@ -77,6 +84,9 @@ final class SyncEngineTests: XCTestCase {
     }
 
     private var methods: [String] { StubURLProtocol.recorded.map { $0.request.httpMethod ?? "?" } }
+
+    /// The JSON body of the i-th request, or an empty one when there is no such request.
+    private func body(_ i: Int) -> [String: Any] { i < sentBodies.count ? sentBodies[i] : [:] }
 
     private var sentBodies: [[String: Any]] {
         StubURLProtocol.recorded.compactMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }
@@ -338,6 +348,263 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(methods, ["PUT", "PATCH"])
         XCTAssertEqual(sentBodies.first?["token"] as? String, testToken)
         XCTAssertEqual(sentBodies[1]["userId"] as? String, "u_1", "the user's own settings come along")
+    }
+
+    // MARK: Reinstall (TracQR dogfooding, 0.3.0)
+
+    func testAReinstallClearsTheServersUserAndTags() async {
+        // The Keychain survives an uninstall; Application Support (the state file) doesn't.
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA", secret: "kept")
+        answer([.json(200, ["deviceId": "x"])])
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        XCTAssertEqual(body(0)["tags"] as? [String], [], "the registration replaces the old tags with none")
+        XCTAssertTrue(body(1).keys.contains("userId") && body(1)["userId"] is NSNull, "then the user is cleared: \(body(1))")
+        // The next launch, with the state file now saved, sends neither again.
+        let relaunch = engine()
+        clock.advance(days: 8)
+        await relaunch.syncIfNeeded()
+        XCTAssertEqual(methods, ["PUT", "PATCH", "PUT"])
+        XCTAssertNil(body(2)["tags"])
+    }
+
+    func testAReinstallKeepsAUserSetDuringLaunch() async {
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA", secret: "kept")
+        answer([.json(200, ["deviceId": "x"])])
+        let e = engine()
+        await e.setUser("u_2", signature: nil)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        XCTAssertEqual(body(0)["tags"] as? [String], [])
+        XCTAssertEqual(body(1)["userId"] as? String, "u_2")
+    }
+
+    func testAFirstInstallSendsNoEmptyTagList() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT"])
+        XCTAssertNil(body(0)["tags"])
+    }
+
+    // MARK: Sign-out and user changes
+
+    func testAUserChangeWakesARetryWaitingOnTheServer() async {
+        // An installed app with its record on the server, signed in.
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA", secret: "s")
+        var installed = PersistedState(desired: base)
+        installed.desired.userId = "u_1"
+        store.save(installed)
+        answer([.json(429, ["error": ["code": "rate_limited", "message": "x"]], headers: ["Retry-After": "120"]), .json(200, ["deviceId": "x"])])
+        let e = engine(realSleep: true)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        for _ in 0..<100 where StubURLProtocol.recorded.isEmpty { try? await Task.sleep(nanoseconds: 10_000_000) }
+        let started = Date()
+        await e.clearUser()
+        await e.settle()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "sign-out doesn't wait out a two-minute retry")
+        XCTAssertEqual(methods, ["PUT", "PUT", "PATCH"])
+        XCTAssertTrue(body(2)["userId"] is NSNull)
+    }
+
+    func testSyncIfNeededWakesARetryWaitingOnTheServer() async {
+        answer([.json(429, ["error": ["code": "rate_limited", "message": "x"]], headers: ["Retry-After": "120"]), .json(201, ["deviceId": "x", "deviceSecret": "s"])])
+        let e = engine(realSleep: true)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        for _ in 0..<100 where StubURLProtocol.recorded.isEmpty { try? await Task.sleep(nanoseconds: 10_000_000) }
+        let started = Date()
+        await e.syncIfNeeded()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "returning to the foreground tries again now")
+        XCTAssertEqual(methods, ["PUT", "PUT"])
+    }
+
+    func testTheSameUserIDTwiceInOneLaunchIsSentOnce() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.setUser("u_1", signature: nil)
+        await e.settle()
+        await e.setUser("u_1", signature: nil)
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        // A new launch sends it once more, in case the developer's server changed the user meanwhile.
+        let relaunch = engine()
+        await relaunch.setUser("u_1", signature: nil)
+        await relaunch.settle()
+        XCTAssertEqual(methods, ["PUT", "PATCH", "PATCH"])
+    }
+
+    func testARejectedTagChangeDoesNotTakeTheUserChangeWithIt() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        answer([.json(400, ["error": ["code": "too_many_tags", "message": "at most 50"]]), .json(200, ["deviceId": "x"])])
+        await e.addTags(["pro"])
+        await e.setUser("u_1", signature: nil)
+        await e.settle()
+        // answer() starts a new request log: the two PATCHes since the registration.
+        XCTAssertEqual(methods, ["PATCH", "PATCH"])
+        XCTAssertEqual(body(1)["userId"] as? String, "u_1")
+        XCTAssertNil(body(1)["addTags"], "the rejected tags are dropped")
+        XCTAssertNil(store.load()?.pending.patch(), "nothing left pending")
+    }
+
+    // MARK: Diagnostics and deleting the device
+
+    func testARejectedChangeIsKeptForDiagnostics() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        answer([.json(400, ["error": ["code": "too_many_tags", "message": "at most 50"]])])
+        await e.addTags(["pro"])
+        await e.settle()
+        let rejected = await e.lastRejected
+        XCTAssertEqual(rejected?.error, .rejected(code: "too_many_tags", message: "at most 50"))
+        let result = await e.lastResult
+        XCTAssertEqual(Diagnostics.lastError(registration: nil, result: result, rejected: rejected), "dropped a change the server rejected: too_many_tags: at most 50")
+    }
+
+    func testAMissingUserSignatureKeepsTheDeviceAndDropsTheUserChange() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        let before = (try? identity.load())??.deviceID
+        answer([.json(403, ["error": ["code": "invalid_user_signature", "message": "userIdSignature is missing or wrong"]])])
+        await e.setUser("u_1", signature: nil)
+        await e.settle()
+        XCTAssertEqual(methods, ["PATCH"], "no new registration")
+        XCTAssertEqual((try? identity.load())??.deviceID, before, "identity verification never costs the device its ID")
+        let rejected = await e.lastRejected
+        XCTAssertEqual(rejected?.error, .rejected(code: "invalid_user_signature", message: "userIdSignature is missing or wrong"))
+        XCTAssertNil(store.load()?.pending.patch())
+    }
+
+    func testTheLastSyncSurvivesARelaunch() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        let synced = clock.now
+        clock.advance(days: 1)
+        let relaunch = engine()
+        let result = await relaunch.lastResult
+        let saved = await relaunch.lastSyncAt
+        XCTAssertNil(result)
+        XCTAssertEqual(saved, synced)
+        XCTAssertEqual(Diagnostics.lastSync(result: result, saved: saved), synced)
+    }
+
+    func testDeleteRemovesTheRecordAndStartsOverAnonymous() async {
+        let e = engine()
+        await e.setUser("u_1", signature: nil)
+        await e.addTags(["pro"])
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        let id = (try? identity.load())??.deviceID
+        answer([.json(204, [:])])
+        let deleted = await e.deleteRecord()
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(methods, ["DELETE"])
+        XCTAssertEqual(StubURLProtocol.recorded.first?.request.url?.lastPathComponent, id)
+        XCTAssertEqual(StubURLProtocol.recorded.first?.request.value(forHTTPHeaderField: "X-Device-Secret"), "secret-1")
+        XCTAssertNil((try? identity.load()) ?? nil, "a new device ID next time")
+        let desired = await e.desired
+        XCTAssertNil(desired.userId)
+        XCTAssertEqual(desired.tags, [])
+        XCTAssertNil(store.load()?.pending.patch())
+        XCTAssertNil(store.load()?.lastSent)
+    }
+
+    func testAFailedDeleteKeepsEverything() async {
+        let e = engine()
+        await e.setUser("u_1", signature: nil)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        answer([.json(503, [:])])
+        let deleted = await e.deleteRecord()
+        XCTAssertFalse(deleted)
+        XCTAssertNotNil((try? identity.load()) ?? nil)
+        let desired = await e.desired
+        XCTAssertEqual(desired.userId, "u_1")
+    }
+
+    // MARK: Review fixes
+
+    func testDeleteDoesNotWaitOutARetry() async {
+        answer([.json(429, ["error": ["code": "rate_limited", "message": "x"]], headers: ["Retry-After": "120"]), .json(204, [:])])
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA", secret: "s")
+        store.save(PersistedState(desired: base))
+        let e = engine(realSleep: true)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        for _ in 0..<100 where StubURLProtocol.recorded.isEmpty { try? await Task.sleep(nanoseconds: 10_000_000) }
+        let started = Date()
+        let deleted = await e.deleteRecord()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "deleting an account never waits out a backoff")
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(methods, ["PUT", "DELETE"])
+    }
+
+    func testASignatureRejectionKeepsTheTags() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        answer([.json(403, ["error": ["code": "invalid_user_signature", "message": "userIdSignature is missing or wrong"]]), .json(200, ["deviceId": "x"])])
+        await e.addTags(["pro"])
+        await e.setUser("u_1", signature: nil)
+        await e.settle()
+        XCTAssertEqual(methods, ["PATCH", "PATCH"])
+        XCTAssertEqual(body(1)["addTags"] as? [String], ["pro"], "the tags go again")
+        XCTAssertNil(body(1)["userId"], "the unsigned user is dropped")
+        XCTAssertNil(store.load()?.pending.patch())
+    }
+
+    func testADeleteAnsweredForbiddenStillForgetsTheDevice() async {
+        let e = engine()
+        await e.setUser("u_1", signature: nil)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        answer([.json(403, ["error": ["code": "forbidden", "message": "missing or wrong device secret"]])])
+        let deleted = await e.deleteRecord()
+        XCTAssertTrue(deleted, "the server has no record under our secret: nothing is left to delete")
+        XCTAssertNil((try? identity.load()) ?? nil)
+    }
+
+    func testNoSyncStartsWhileADeleteIsInFlight() async {
+        let e = engine()
+        await e.setUser("u_1", signature: nil)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        StubURLProtocol.answer { r in
+            if r.request.httpMethod == "DELETE" {
+                Task { await e.addTags(["late"]) }
+                Thread.sleep(forTimeInterval: 0.1)
+                return .json(204, [:])
+            }
+            return .json(201, ["deviceId": "x", "deviceSecret": "new"])
+        }
+        let deleted = await e.deleteRecord()
+        XCTAssertTrue(deleted)
+        await e.settle()
+        let urls = StubURLProtocol.recorded.map { "\($0.request.httpMethod ?? "?") \($0.request.url!.lastPathComponent)" }
+        XCTAssertEqual(urls.first?.hasPrefix("DELETE"), true, "\(urls)")
+        XCTAssertFalse(urls.dropFirst().contains { $0.hasPrefix("PUT dev_") && $0.hasSuffix(urls[0].split(separator: " ")[1]) }, "the deleted ID is never registered again: \(urls)")
+        XCTAssertFalse(sentBodies.contains { ($0["userId"] as? String) == "u_1" }, "the deleted user is never re-applied")
+    }
+
+    func testAnUnreadableStateFileIsNotTakenForAReinstall() async {
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA", secret: "kept")
+        let unreadable = UnreadableStateStore()
+        answer([.json(200, ["deviceId": "x"])])
+        let e = SyncEngine(client: APIClient(key: key, session: StubURLProtocol.session()), identity: identity, store: unreadable, initial: base, now: { [clock] in clock!.now }, sleep: { _ in }, debounce: 0)
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT"])
+        XCTAssertNil(body(0)["tags"], "a file we can't read is not a reinstall: the server's tags stay")
+    }
+
+    func testTheDefaultLogLevelShowsRegistrations() {
+        XCTAssertEqual(Log.defaultLevel, .info)
     }
 
     func testEachAppKeepsItsOwnStateFile() {

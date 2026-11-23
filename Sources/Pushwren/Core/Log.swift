@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-/// How much the SDK writes to the unified log. Errors are on by default.
+/// How much the SDK writes to the unified log. Errors and info (registrations, dropped changes) are on by default.
 public enum LogLevel: Int, Sendable, Comparable {
     case off, error, info, debug
 
@@ -10,7 +10,9 @@ public enum LogLevel: Int, Sendable, Comparable {
 
 /// Logging through os.Logger, subsystem "com.pushwren.sdk". Device tokens are never logged whole.
 enum Log {
-    private static let state = OSAllocatedUnfairLock(initialState: LogLevel.error)
+    /// Info by default (0.3.0): "Registered device…" is what tells a developer push is working.
+    static let defaultLevel = LogLevel.info
+    private static let state = OSAllocatedUnfairLock(initialState: defaultLevel)
     private static let logger = Logger(subsystem: "com.pushwren.sdk", category: "Pushwren")
 
     static var level: LogLevel {

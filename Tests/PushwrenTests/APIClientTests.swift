@@ -34,6 +34,23 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(json["locale"], "absent fields are left out, not sent as null")
     }
 
+    func testA403ForAUserSignatureIsARejectionNotALostSecret() async {
+        StubURLProtocol.answer { _ in .json(403, ["error": ["code": "invalid_user_signature", "message": "userIdSignature is missing or wrong"]]) }
+        do {
+            try await client().patchDevice(deviceID, DevicePatch(user: .set(id: "u_1", signature: nil), addTags: [], removeTags: []), secret: "s")
+            XCTFail("expected a rejection")
+        } catch {
+            XCTAssertEqual(error, .rejected(code: "invalid_user_signature", message: "userIdSignature is missing or wrong"))
+        }
+        StubURLProtocol.answer { _ in .json(403, ["error": ["code": "forbidden", "message": "missing or wrong device secret"]]) }
+        do {
+            try await client().patchDevice(deviceID, DevicePatch(user: .clear, addTags: [], removeTags: []), secret: "s")
+            XCTFail("expected forbidden")
+        } catch {
+            XCTAssertEqual(error, .forbidden)
+        }
+    }
+
     func testPatchSendsTheOperationsWithTheSecret() async throws {
         StubURLProtocol.answer { _ in .json(200, ["deviceId": "x"]) }
         try await client().patchDevice(deviceID, DevicePatch(user: .clear, addTags: ["pro"], removeTags: []), secret: "s3cret")

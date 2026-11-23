@@ -25,7 +25,18 @@ actor SyncEngine {
 
     private var state: PersistedState
     private var running: Task<Void, Never>?
+    /// Which scheduled run `running` is, so an abandoned run finishing late can't clear a newer one.
+    private var generation = 0
+    /// True while `deleteRecord` talks to the server: nothing else may sync then.
+    private var deleting = false
+    /// The wait before the next retry, when one is in progress: a user change or a foreground cuts it short.
+    private var backoff: Task<Void, Never>?
     private(set) var lastResult: SyncResult?
+    /// The last change the server refused for good, which was dropped (0.3.0: shown in diagnostics).
+    private(set) var lastRejected: SyncResult?
+    /// The user change the server took during this launch. Setting the same user again sends nothing,
+    /// until the next launch (the developer's server may have changed it meanwhile).
+    private var userConfirmed: PendingChanges.UserChange?
 
     init(
         client: APIClient,
@@ -43,7 +54,15 @@ actor SyncEngine {
         self.now = now
         self.sleep = sleep
         self.debounce = debounce
-        var state = store.load() ?? PersistedState(desired: initial)
+        let saved = store.load()
+        var state = saved ?? PersistedState(desired: initial)
+        if saved == nil, !store.exists, !freshIdentity, (try? identity.load()) != nil {
+            // An identity in the Keychain but no state file: the app was deleted and installed again.
+            // The server still has the old install's user and tags; replace them with none. A user
+            // the app sets during this launch replaces the clear.
+            state.clearServerTags = true
+            state.pending.user = .clear
+        }
         if freshIdentity {
             // No identity in the Keychain but a state file: a backup restored onto another device.
             // Its token belongs to the old device; keep the user's settings, wait for our own token.
@@ -61,6 +80,8 @@ actor SyncEngine {
     }
 
     var desired: DeviceState { state.desired }
+    /// The last registration the server accepted, from any launch.
+    var lastSyncAt: Date? { state.lastSyncAt }
     var deviceID: String? { (try? identity.load())??.deviceID }
 
     /// Applies a change, saves it, and schedules a sync. A change that changes nothing does nothing.
@@ -88,17 +109,20 @@ actor SyncEngine {
     }
 
     func setUser(_ id: String, signature: String?) {
+        let change = PendingChanges.UserChange.set(id: id, signature: signature)
+        if state.pending.user == nil, userConfirmed == change, state.desired.userId == id, state.desired.userIdSignature == signature { return }
         state.desired.userId = id
         state.desired.userIdSignature = signature
-        state.pending.user = .set(id: id, signature: signature)
-        changed()
+        state.pending.user = change
+        changed(urgent: true)
     }
 
     func clearUser() {
+        if state.pending.user == nil, userConfirmed == .clear, state.desired.userId == nil { return }
         state.desired.userId = nil
         state.desired.userIdSignature = nil
         state.pending.user = .clear
-        changed()
+        changed(urgent: true)
     }
 
     /// Opens kept while the device can't report them; older ones are dropped beyond this.
@@ -112,9 +136,12 @@ actor SyncEngine {
         changed()
     }
 
-    private func changed() {
+    /// Saves and schedules a sync. An urgent change (the user) also cuts short a retry's wait:
+    /// sign-out shouldn't sit behind a long backoff.
+    private func changed(urgent: Bool = false) {
         store.save(state)
         schedule(after: debounce)
+        if urgent { backoff?.cancel() }
     }
 
     /// The tags and user the app has set, all queued again: the server made a new record.
@@ -128,6 +155,7 @@ actor SyncEngine {
     /// Syncs now if anything is due (a change not yet accepted, or a refresh), and waits for it.
     func syncIfNeeded() async {
         schedule(after: 0)
+        backoff?.cancel()
         await settle()
     }
 
@@ -136,22 +164,67 @@ actor SyncEngine {
         while let task = running { await task.value }
     }
 
+    /// Deletes this device's record on the server, for when a user deletes their account, then
+    /// forgets the device ID, user and tags. The device registers again, as a new device with no
+    /// user, the next time the app syncs. False when the server couldn't be reached: nothing is
+    /// forgotten, so the app can try again.
+    func deleteRecord() async -> Bool {
+        deleting = true
+        defer {
+            deleting = false
+        }
+        let inFlight = running
+        inFlight?.cancel()
+        backoff?.cancel()
+        await inFlight?.value
+        let stored: (deviceID: String, secret: String?)?
+        do { stored = try identity.load() } catch { return false }
+        if let stored, let secret = stored.secret {
+            do {
+                try await client.deleteDevice(stored.deviceID, secret: secret)
+            } catch .forbidden {
+                // No record under our secret: there's nothing of ours left to delete.
+            } catch {
+                lastResult = SyncResult(at: now(), error: error)
+                Log.error("Pushwren couldn't delete the device: \(error)")
+                return false
+            }
+        }
+        identity.reset()
+        state.desired.userId = nil
+        state.desired.userIdSignature = nil
+        state.desired.tags = []
+        state.pending = PendingChanges()
+        state.opens = []
+        state.lastSent = nil
+        state.lastSyncAt = nil
+        state.clearServerTags = false
+        userConfirmed = nil
+        lastRejected = nil
+        store.save(state)
+        Log.info("Deleted the device from Pushwren")
+        return true
+    }
+
     /// Abandons any scheduled sync. The saved state is kept for next time.
     func stop() {
         running?.cancel()
+        backoff?.cancel()
         running = nil
     }
 
     private func schedule(after delay: TimeInterval) {
-        guard running == nil else { return }
+        guard running == nil, !deleting else { return }
+        generation += 1
+        let mine = generation
         running = Task { [sleep] in
             await sleep(delay)
-            await self.run()
+            await self.run(generation: mine)
         }
     }
 
-    private func run() async {
-        defer { running = nil }
+    private func run(generation mine: Int) async {
+        defer { if generation == mine { running = nil } }
         var attempt = 0
         var startedOver = false
         while !Task.isCancelled {
@@ -179,7 +252,8 @@ actor SyncEngine {
             }()
             do {
                 if needsPut || current.secret == nil {
-                    let secret = try await client.putDevice(current.deviceID, payload, secret: current.secret)
+                    let secret = try await client.putDevice(current.deviceID, payload, secret: current.secret, clearTags: state.clearServerTags)
+                    state.clearServerTags = false
                     if let secret {
                         identity.save(deviceID: current.deviceID, secret: secret)
                         // A new record on the server: it has none of the app's tags or user yet.
@@ -192,13 +266,27 @@ actor SyncEngine {
                 } else if let patch, let secret = current.secret {
                     do {
                         try await client.patchDevice(current.deviceID, patch, secret: secret)
+                        // Only what was sent: a change made while the request was in flight goes out next.
+                        state.pending.clear(sent: patch)
+                        if let user = patch.user { userConfirmed = user }
                     } catch .rejected(let code, let message) where code != "not_found" {
                         // The server will never take this change (say, more than 50 tags once its own
-                        // are counted). Drop it rather than block every later change and open behind it.
-                        Log.error("Pushwren dropped a tag or user change the server rejected: \(code): \(message)")
+                        // are counted). Drop it rather than block every later change and open behind it,
+                        // and say so in diagnostics. A user change sent with rejected tags goes again
+                        // alone; a rejected signature drops only the user change, and the tags go again.
+                        lastRejected = SyncResult(at: now(), error: .rejected(code: code, message: message))
+                        let hasTags = !patch.addTags.isEmpty || !patch.removeTags.isEmpty
+                        if code == "invalid_user_signature" {
+                            Log.error("Pushwren dropped a user ID without a valid signature: identity verification is on. \(message)")
+                            if state.pending.user == patch.user { state.pending.user = nil }
+                        } else if hasTags, patch.user != nil {
+                            Log.error("Pushwren dropped a tag change the server rejected: \(code): \(message)")
+                            state.pending.clearTags(sent: patch)
+                        } else {
+                            Log.error("Pushwren dropped a \(hasTags ? "tag" : "user") change the server rejected: \(code): \(message)")
+                            state.pending.clear(sent: patch)
+                        }
                     }
-                    // Only what was sent: a change made while the request was in flight goes out next.
-                    state.pending.clear(sent: patch)
                 } else if let open, let secret = current.secret {
                     do {
                         try await client.postEvent(deviceID: current.deviceID, notificationID: open, secret: secret)
@@ -223,12 +311,17 @@ actor SyncEngine {
                 startedOver = true
             } catch {
                 lastResult = SyncResult(at: now(), error: error)
+                // Stopped or deleting: don't start a wait nothing can cut short.
+                if Task.isCancelled { return }
                 guard let wait = RetryPolicy.delay(attempt: attempt, error: error) else {
                     Log.error("Pushwren sync failed: \(error)")
                     return
                 }
                 attempt += 1
-                await sleep(wait)
+                let waiting = Task { [sleep] in await sleep(wait) }
+                backoff = waiting
+                await waiting.value
+                backoff = nil
             }
         }
     }
