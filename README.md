@@ -11,7 +11,8 @@ then sends to them by device, user or tag.
 - iOS 16, iPadOS 16, Mac Catalyst 16 or macOS 13 and later.
 - Xcode 16 or later. The package uses Swift 6 and has no dependencies.
 - An APNs auth key (`.p8`) uploaded to your app in the Pushwren portal, and the app's
-  publishable key (`pk_live_…`) from the portal.
+  publishable key (`pk_live_…`) from the portal. New to APNs keys? See
+  [Making an APNs key](docs/apns-key.md).
 
 ## Install
 
