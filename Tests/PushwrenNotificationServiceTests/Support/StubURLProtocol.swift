@@ -26,7 +26,13 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 
     static func answer(with handler: @escaping Handler) {
         state.withLock { $0 = (handler, []) }
+        answered.withLock { $0 = 0 }
     }
+
+    private static let answered = OSAllocatedUnfairLock(initialState: 0)
+
+    /// How many requests were answered to the end (not cancelled first) since `answer(with:)`.
+    static var answeredCount: Int { answered.withLock { $0 } }
 
     static var recorded: [Recorded] { state.withLock { $0.recorded } }
 
@@ -52,6 +58,7 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 
     private func deliver(_ answer: Answer) {
         if stopped.withLock({ $0 }) { return }
+        if case .delayed = answer {} else { Self.answered.withLock { $0 += 1 } }
         switch answer {
         case let .response(status, headers, body):
             let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/2", headerFields: headers)!

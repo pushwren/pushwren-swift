@@ -97,8 +97,8 @@ class NotificationService: PushwrenNotificationService {}
 If your extension already does its own work, call `PushwrenExtension.handle(request, contentHandler:)`
 from `didReceive` and the returned handle's `timeWillExpire()` from `serviceExtensionTimeWillExpire()`.
 The app finds the helper in its extension at launch and tells Pushwren, which only then asks that
-device for receipts. A notification never waits more than a second for its receipt, so Delivered is
-a lower bound: a receipt can be lost on the way. See
+device for receipts. A notification waits at most a second for its receipt, and a receipt can be lost
+on the way, so Delivered is a lower bound. See
 [Images and delivery receipts](https://docs.pushwren.com/guides/images-and-receipts).
 
 ## Documentation
