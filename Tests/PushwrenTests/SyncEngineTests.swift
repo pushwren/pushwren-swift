@@ -603,6 +603,42 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertNil(body(0)["tags"], "a file we can't read is not a reinstall: the server's tags stay")
     }
 
+    func testTheRegistrationSaysWhetherTheAppHasPushwrensExtension() async {
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox; $0.serviceExtension = true }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT"])
+        XCTAssertEqual(body(0)["serviceExtension"] as? Bool, true)
+        await e.update { $0.serviceExtension = false }
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PUT"], "a change is a new registration")
+        XCTAssertEqual(body(1)["serviceExtension"] as? Bool, false)
+    }
+
+    func testAFoundExtensionIsRememberedForTheAppVersionAndBuild() async {
+        let scans = OSAllocatedUnfairLock(initialState: 0)
+        let found: @Sendable () -> Bool = { scans.withLock { $0 += 1 }; return true }
+        let first = await engine().serviceExtension(appVersion: "1.2", build: "7", detect: found)
+        XCTAssertTrue(first)
+        let relaunch = await engine().serviceExtension(appVersion: "1.2", build: "7", detect: { XCTFail("scanned again"); return false })
+        XCTAssertTrue(relaunch, "the saved answer")
+        _ = await engine().serviceExtension(appVersion: "1.2", build: "8", detect: found)
+        _ = await engine().serviceExtension(appVersion: "1.3", build: "8", detect: found)
+        XCTAssertEqual(scans.withLock { $0 }, 3, "a new build or version looks again")
+    }
+
+    func testAnAppWithoutTheExtensionIsCheckedAgainAtEachLaunch() async {
+        let scans = OSAllocatedUnfairLock(initialState: 0)
+        let missing: @Sendable () -> Bool = { scans.withLock { $0 += 1 }; return false }
+        let first = await engine().serviceExtension(appVersion: "1.2", build: "7", detect: missing)
+        let relaunch = await engine().serviceExtension(appVersion: "1.2", build: "7", detect: missing)
+        let added = await engine().serviceExtension(appVersion: "1.2", build: "7", detect: { true })
+        XCTAssertFalse(first)
+        XCTAssertFalse(relaunch)
+        XCTAssertTrue(added, "added during development, same build number")
+        XCTAssertEqual(scans.withLock { $0 }, 2)
+    }
+
     func testTheDefaultLogLevelShowsRegistrations() {
         XCTAssertEqual(Log.defaultLevel, .info)
     }

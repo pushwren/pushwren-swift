@@ -134,12 +134,33 @@ actor SyncEngine {
     /// Opens kept while the device can't report them; older ones are dropped beyond this.
     static let maxQueuedOpens = 100
 
-    /// Queues an `opened` event; it goes out once the device has its secret.
-    func recordOpen(_ notificationID: String) {
+    /// Queues an `opened` event; it goes out once the device has its secret. `receiptRequested`:
+    /// the push asked for a delivery receipt, which the event says.
+    func recordOpen(_ notificationID: String, receiptRequested: Bool = false) {
         guard !state.opens.contains(notificationID) else { return }
         state.opens.append(notificationID)
-        if state.opens.count > Self.maxQueuedOpens { state.opens.removeFirst(state.opens.count - Self.maxQueuedOpens) }
+        if receiptRequested { state.opensWithReceipt.append(notificationID) }
+        if state.opens.count > Self.maxQueuedOpens {
+            state.opens.removeFirst(state.opens.count - Self.maxQueuedOpens)
+            let queued = state.opens
+            state.opensWithReceipt.removeAll { !queued.contains($0) }
+        }
         changed()
+    }
+
+    /// Whether this app version and build ships Pushwren's extension helper. A yes is saved and
+    /// reused until the version or build changes; a no is checked again at each launch, so an
+    /// extension added during development counts without a new build number.
+    func serviceExtension(appVersion: String?, build: String?, detect: @Sendable () -> Bool) -> Bool {
+        if let saved = state.serviceExtensionCheck, saved.found, saved.appVersion == appVersion, saved.build == build {
+            return true
+        }
+        let check = ServiceExtensionCheck(appVersion: appVersion, build: build, found: detect())
+        if check != state.serviceExtensionCheck {
+            state.serviceExtensionCheck = check
+            store.save(state)
+        }
+        return check.found
     }
 
     /// Queues a Live Activity token or end; it goes out once the device is registered.
@@ -225,6 +246,7 @@ actor SyncEngine {
         state.desired.tags = []
         state.pending = PendingChanges()
         state.opens = []
+        state.opensWithReceipt = []
         state.lastSent = nil
         state.lastSyncAt = nil
         state.clearServerTags = false
@@ -333,12 +355,14 @@ actor SyncEngine {
                     state.pending.clear(sent: report)
                 } else if let open, let secret = current.secret {
                     do {
-                        try await client.postEvent(deviceID: current.deviceID, notificationID: open, secret: secret)
+                        let receiptRequested = state.opensWithReceipt.contains(open)
+                        try await client.postEvent(deviceID: current.deviceID, notificationID: open, receiptRequested: receiptRequested, secret: secret)
                     } catch .rejected {
                         // An unknown or expired notification: the open can never be recorded.
                         Log.info("Pushwren dropped the open of \(open): the server doesn't know it")
                     }
                     state.opens.removeAll { $0 == open }
+                    state.opensWithReceipt.removeAll { $0 == open }
                 }
                 store.save(state)
                 lastResult = SyncResult(at: now(), error: nil)

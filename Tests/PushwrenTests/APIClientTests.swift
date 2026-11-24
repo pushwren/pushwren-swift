@@ -34,6 +34,32 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(json["locale"], "absent fields are left out, not sent as null")
     }
 
+    func testPutSendsWhetherTheAppHasPushwrensExtension() async throws {
+        StubURLProtocol.answer { _ in .json(200, ["deviceId": "x"]) }
+        for value in [true, false] {
+            var withExtension = payload
+            withExtension.serviceExtension = value
+            _ = try await client().putDevice(deviceID, withExtension, secret: "s")
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(StubURLProtocol.recorded.last).body) as? [String: Any])
+            XCTAssertEqual(json["serviceExtension"] as? Bool, value)
+        }
+        _ = try await client().putDevice(deviceID, payload, secret: "s")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(StubURLProtocol.recorded.last).body) as? [String: Any])
+        XCTAssertNil(json["serviceExtension"], "not yet known: left out")
+    }
+
+    func testAnOpenSaysWhenItsPushAskedForAReceipt() async throws {
+        StubURLProtocol.answer { _ in .json(204, [:]) }
+        let ntf = "ntf_01JD3QF1V6N8R2Y4P7S9T0AKME"
+        try await client().postEvent(deviceID: deviceID, notificationID: ntf, receiptRequested: true, secret: "s")
+        try await client().postEvent(deviceID: deviceID, notificationID: ntf, receiptRequested: false, secret: "s")
+        let bodies = StubURLProtocol.recorded.map { String(decoding: $0.body, as: UTF8.self) }
+        XCTAssertEqual(bodies, [
+            #"{"deviceId":"\#(deviceID)","notificationId":"\#(ntf)","receiptRequested":true,"type":"opened"}"#,
+            #"{"deviceId":"\#(deviceID)","notificationId":"\#(ntf)","type":"opened"}"#,
+        ])
+    }
+
     func testA403ForAUserSignatureIsARejectionNotALostSecret() async {
         StubURLProtocol.answer { _ in .json(403, ["error": ["code": "invalid_user_signature", "message": "userIdSignature is missing or wrong"]]) }
         do {

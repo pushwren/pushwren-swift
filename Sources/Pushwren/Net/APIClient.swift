@@ -16,6 +16,7 @@ struct DevicePayload: Codable, Equatable, Sendable {
     var osVersion: String?
     var sdkVersion: String?
     var model: String?
+    var serviceExtension: Bool?
 
     init(
         token: String,
@@ -28,7 +29,8 @@ struct DevicePayload: Codable, Equatable, Sendable {
         appVersion: String? = nil,
         osVersion: String? = nil,
         sdkVersion: String? = nil,
-        model: String? = nil
+        model: String? = nil,
+        serviceExtension: Bool? = nil
     ) {
         self.token = token
         self.environment = environment
@@ -41,6 +43,7 @@ struct DevicePayload: Codable, Equatable, Sendable {
         self.osVersion = osVersion
         self.sdkVersion = sdkVersion
         self.model = model
+        self.serviceExtension = serviceExtension
     }
 }
 
@@ -121,11 +124,19 @@ struct APIClient: Sendable {
         _ = try await send("PATCH", "v1/devices/\(deviceID)", body: body, secret: secret)
     }
 
-    /// Reports that the user opened a notification on this device.
-    func postEvent(deviceID: String, notificationID: String, secret: String) async throws(APIError) {
-        struct Event: Encodable { let type = "opened"; let deviceId: String; let notificationId: String }
+    /// Reports that the user opened a notification on this device. `receiptRequested`: the push
+    /// asked for a delivery receipt (it carried `_r`), so the open also counts it as delivered.
+    func postEvent(deviceID: String, notificationID: String, receiptRequested: Bool = false, secret: String) async throws(APIError) {
+        struct Event: Encodable {
+            let type = "opened"
+            let deviceId: String
+            let notificationId: String
+            /// true or left out.
+            let receiptRequested: Bool?
+        }
+        let event = Event(deviceId: deviceID, notificationId: notificationID, receiptRequested: receiptRequested ? true : nil)
         let body: Data
-        do { body = try Self.encoder.encode(Event(deviceId: deviceID, notificationId: notificationID)) } catch { throw .rejected(code: "encoding", message: "\(error)") }
+        do { body = try Self.encoder.encode(event) } catch { throw .rejected(code: "encoding", message: "\(error)") }
         _ = try await send("POST", "v1/events", body: body, secret: secret)
     }
 

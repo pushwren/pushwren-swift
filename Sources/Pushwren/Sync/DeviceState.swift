@@ -19,6 +19,8 @@ struct DeviceState: Codable, Equatable, Sendable {
     var osVersion: String?
     var sdkVersion: String?
     var model: String?
+    /// Whether the app ships Pushwren's extension helper (0.5.0); nil until checked.
+    var serviceExtension: Bool?
 
     init(platform: Platform, bundleId: String, sdkVersion: String? = nil) {
         self.platform = platform
@@ -40,7 +42,8 @@ struct DeviceState: Codable, Equatable, Sendable {
             appVersion: appVersion,
             osVersion: osVersion,
             sdkVersion: sdkVersion,
-            model: model
+            model: model,
+            serviceExtension: serviceExtension
         )
     }
 }
@@ -57,8 +60,12 @@ struct PersistedState: Codable, Equatable, Sendable {
     var pending = PendingChanges()
     /// Notification IDs whose opens haven't reached the server yet.
     var opens: [String] = []
+    /// Those of `opens` whose push asked for a delivery receipt (it carried `_r`) (0.5.0).
+    var opensWithReceipt: [String] = []
     /// The app was reinstalled: the next registration replaces the server's tags with none (0.3.0).
     var clearServerTags = false
+    /// The last look for Pushwren's extension helper, and which app version and build it was (0.5.0).
+    var serviceExtensionCheck: ServiceExtensionCheck?
 
     init(desired: DeviceState, lastSent: DevicePayload? = nil, lastSyncAt: Date? = nil) {
         self.desired = desired
@@ -67,7 +74,7 @@ struct PersistedState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens, clearServerTags
+        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens, opensWithReceipt, clearServerTags, serviceExtensionCheck
     }
 
     /// Reads version 1 files too: their tags and user already reached the server inside the
@@ -81,7 +88,16 @@ struct PersistedState: Codable, Equatable, Sendable {
         lastSentHost = try c.decodeIfPresent(String.self, forKey: .lastSentHost)
         pending = try c.decodeIfPresent(PendingChanges.self, forKey: .pending) ?? PendingChanges()
         opens = try c.decodeIfPresent([String].self, forKey: .opens) ?? []
+        opensWithReceipt = try c.decodeIfPresent([String].self, forKey: .opensWithReceipt) ?? []
         clearServerTags = try c.decodeIfPresent(Bool.self, forKey: .clearServerTags) ?? false
+        serviceExtensionCheck = try c.decodeIfPresent(ServiceExtensionCheck.self, forKey: .serviceExtensionCheck)
         version = 2
     }
+}
+
+/// Whether a build of the app was found to ship Pushwren's extension helper.
+struct ServiceExtensionCheck: Codable, Equatable, Sendable {
+    var appVersion: String?
+    var build: String?
+    var found: Bool
 }

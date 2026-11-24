@@ -119,7 +119,8 @@ public enum Pushwren {
         OpenBroadcaster.shared.yield(open)
         guard let id = open.notificationID else { return }
         Log.info("Notification opened: \(id)")
-        enqueue { await Runtime.shared.engineDo { await $0.recordOpen(id) } }
+        let receiptRequested = open.receiptRequested
+        enqueue { await Runtime.shared.engineDo { await $0.recordOpen(id, receiptRequested: receiptRequested) } }
     }
 
     /// Every notification the user opens, for deep links. Each `for await` gets every open from
@@ -317,6 +318,9 @@ actor Runtime {
 
         let facts = DeviceFacts.current()
         let environment = override ?? detection.environment
+        let serviceExtension = await engine.serviceExtension(appVersion: facts.appVersion, build: facts.build) {
+            ServiceExtension.detect(in: .main)
+        }
         await engine.update { s in
             s.environment = environment
             s.platform = platform
@@ -327,6 +331,7 @@ actor Runtime {
             s.locale = facts.locale
             s.timezone = facts.timezone
             s.model = facts.model
+            s.serviceExtension = serviceExtension
         }
         for call in pending { await call(engine) }
         pending = []
@@ -426,6 +431,8 @@ actor Runtime {
 /// The device facts a registration carries besides the token.
 struct DeviceFacts: Sendable {
     let appVersion: String?
+    /// CFBundleVersion: not sent, but a new build is looked at again for Pushwren's extension.
+    let build: String?
     let osVersion: String
     let locale: String
     let timezone: String
@@ -435,6 +442,7 @@ struct DeviceFacts: Sendable {
         let v = ProcessInfo.processInfo.operatingSystemVersion
         return DeviceFacts(
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
             osVersion: v.patchVersion == 0 ? "\(v.majorVersion).\(v.minorVersion)" : "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)",
             locale: Locale.current.identifier(.bcp47),
             timezone: TimeZone.current.identifier,

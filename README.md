@@ -25,7 +25,7 @@ then sends to them by device, user or tag.
    Capabilities**; setting `INFOPLIST_KEY_UIBackgroundModes` as a build setting has no effect.
 
 If you use `Package.swift` instead of Xcode, add
-`.package(url: "https://github.com/pushwren/pushwren-swift", .upToNextMinor(from: "0.4.1"))`.
+`.package(url: "https://github.com/pushwren/pushwren-swift", .upToNextMinor(from: "0.5.0"))`.
 
 ## Use
 
@@ -81,6 +81,25 @@ only after the person taps **Allow** on Apple's "Allow Live Activities from *you
 shown with it: iOS gives the app the activity's update token only then. [Examples/LiveActivities](Examples/LiveActivities)
 is a sample app with a widget extension, and the Xcode steps.
 
+### Images and delivery receipts (iOS)
+
+A Notification Service Extension lets a push show an image, and confirms on the device that each
+push arrived, which Pushwren shows as **Delivered**. In Xcode, add a **Notification Service
+Extension** target to your app, add the **PushwrenNotificationService** product to that target (not
+Pushwren), and make its class a subclass:
+
+```swift
+import PushwrenNotificationService
+
+class NotificationService: PushwrenNotificationService {}
+```
+
+If your extension already does its own work, call `PushwrenExtension.handle(request, contentHandler:)`
+from `didReceive` and the returned handle's `timeWillExpire()` from `serviceExtensionTimeWillExpire()`.
+The app finds the helper in its extension at launch and tells Pushwren, which only then asks that
+device for receipts. Delivered is a lower bound: a receipt can be lost on the way. See
+[Images and delivery receipts](https://docs.pushwren.com/guides/images-and-receipts).
+
 ## Documentation
 
 The docs at [docs.pushwren.com](https://docs.pushwren.com) cover the rest:
@@ -94,6 +113,7 @@ The docs at [docs.pushwren.com](https://docs.pushwren.com) cover the rest:
 - [Identity verification](https://docs.pushwren.com/guides/identity-verification)
 - [Silent pushes](https://docs.pushwren.com/guides/silent-pushes)
 - [Live Activities](https://docs.pushwren.com/guides/live-activities)
+- [Images and delivery receipts](https://docs.pushwren.com/guides/images-and-receipts)
 - [Troubleshooting](https://docs.pushwren.com/guides/troubleshooting)
 - [API reference](https://docs.pushwren.com/api) and [errors](https://docs.pushwren.com/errors)
 
@@ -108,6 +128,8 @@ The docs at [docs.pushwren.com](https://docs.pushwren.com) cover the rest:
   each activity's end through the same queue, so your server addresses activities by its own key.
   Live Activities are iOS and iPadOS only.
 - Counts opens: a tap on a notification Pushwren sent is reported once, even across relaunches.
+- Tells Pushwren whether the app ships its Notification Service Extension helper, so receipts are
+  asked only of devices that can send them; the helper attaches images and posts the receipts.
 - Sends tag and user-ID changes as changes, not as a full list, so tags your server adds with
   `PATCH /v1/devices/{id}` stay when the app adds its own. For the user ID, the last change wins.
 - Ships a privacy manifest. There is no tracking and no IDFA.
@@ -122,7 +144,8 @@ for tracking, and used for **app functionality**:
 Declare the same in your App Store privacy answers. Linking the package adds the manifest to every
 build of that target, even one that never calls `configure`. Registrations also send the device
 model, OS and app version, locale, time zone and notification permission, and taps send an
-`opened` event; Pushwren uses them to deliver and count your pushes.
+`opened` event. With the extension helper, a push that asks for a receipt sends one when it
+arrives. Pushwren uses them to deliver and count your pushes.
 
 ## License
 

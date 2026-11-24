@@ -15,7 +15,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PushwrenTests",
-            dependencies: ["Pushwren"],
+            dependencies: ["Pushwren", "PushwrenNotificationService"],
             resources: [.copy("Fixtures")]
         ),
         // For a Notification Service Extension target. It doesn't depend on Pushwren, which uses

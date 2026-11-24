@@ -105,6 +105,47 @@ final class OpenTrackerTests: XCTestCase {
         XCTAssertEqual(open.actionIdentifier, "com.apple.UNNotificationDefaultActionIdentifier")
     }
 
+    func testDataLeavesOutTheImageAndReceiptKeys() {
+        let open = OpenedNotification(
+            userInfo: ["aps": ["alert": "hi"], "_h": ntf, "_i": "https://example.com/a.jpg", "_r": "rc_1", "orderId": "A1"],
+            actionIdentifier: "tap"
+        )
+        XCTAssertEqual(Set(open.data.keys), ["orderId"])
+        XCTAssertTrue(open.receiptRequested)
+        XCTAssertFalse(OpenedNotification(userInfo: ["_h": ntf, "_i": "https://example.com/a.jpg"], actionIdentifier: "tap").receiptRequested)
+    }
+
+    func testAnOpenOfAPushThatAskedForAReceiptSaysSo() async {
+        let e = engine()
+        await e.update { [token] in $0.token = token; $0.environment = .sandbox }
+        await e.settle()
+        let other = "ntf_01JD3QF1V6N8R2Y4P7S9T0AKMF"
+        await e.recordOpen(ntf, receiptRequested: true)
+        await e.settle()
+        await e.recordOpen(other, receiptRequested: false)
+        await e.settle()
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events.first?["notificationId"] as? String, ntf)
+        XCTAssertEqual(events.first?["receiptRequested"] as? Bool, true)
+        XCTAssertEqual(events.last?["notificationId"] as? String, other)
+        XCTAssertNil(events.last?["receiptRequested"], "left out when the push didn't ask")
+        XCTAssertEqual(store.load()?.opensWithReceipt, [])
+    }
+
+    func testAQueuedOpenKeepsItsReceiptFlagAcrossARelaunch() async {
+        let first = engine()
+        await first.update { [token] in $0.token = token; $0.environment = .sandbox }
+        await first.settle()
+        let launching = engine(debounce: 60, realSleep: true)
+        await launching.recordOpen(ntf, receiptRequested: true)
+        await launching.stop()
+        XCTAssertEqual(events.count, 0)
+        let next = engine()
+        await next.syncIfNeeded()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?["receiptRequested"] as? Bool, true)
+    }
+
     func testAnOpenBeforeAnySubscriberReachesTheFirstSubscriber() async {
         let b = OpenBroadcaster()
         b.yield(OpenedNotification(userInfo: ["_h": ntf], actionIdentifier: "tap"))

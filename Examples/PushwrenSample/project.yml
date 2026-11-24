@@ -39,6 +39,9 @@ targets:
   PushwrenSample-iOS:
     templates: [Sample]
     platform: iOS
+    dependencies:
+      # Embedded in the app's PlugIns, where Pushwren finds it and asks the server for delivery receipts.
+      - target: PushwrenSample-NotificationService
     entitlements:
       path: PushwrenSample-iOS.entitlements
       properties:
@@ -53,6 +56,30 @@ targets:
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"
+  # Pushwren's extension helper: attaches a push's image and confirms its delivery.
+  PushwrenSample-NotificationService:
+    type: app-extension
+    platform: iOS
+    sources: [NotificationService]
+    dependencies:
+      - package: Pushwren
+        product: PushwrenNotificationService
+    info:
+      path: Generated/PushwrenSample-NotificationService-Info.plist
+      properties:
+        CFBundleDisplayName: Pushwren Sample Notification Service
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pushwren.sample.NotificationService
+        PRODUCT_NAME: NotificationService
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Xcode's "Require Only App-Extension-Safe API": the helper uses none of the app-only ones.
+        APPLICATION_EXTENSION_API_ONLY: YES
   PushwrenSample-macOS:
     templates: [Sample]
     platform: macOS

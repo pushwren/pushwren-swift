@@ -7,8 +7,10 @@ public struct OpenedNotification: Sendable {
     public let notificationID: String?
     /// `UNNotificationDefaultActionIdentifier` for a plain tap, or the custom action's identifier.
     public let actionIdentifier: String
-    /// The payload's custom keys (everything but `aps` and `_h`) as JSON.
+    /// The payload's custom keys (everything but `aps` and Pushwren's own `_h`, `_i` and `_r`) as JSON.
     public let dataJSON: Data
+    /// The push asked for a delivery receipt (it carried `_r`).
+    let receiptRequested: Bool
 
     /// The payload's custom keys, for example `["orderId": "A1001"]`.
     public var data: [String: Any] {
@@ -19,13 +21,18 @@ public struct OpenedNotification: Sendable {
         let h = userInfo["_h"] as? String
         notificationID = h.flatMap { $0.range(of: "^ntf_[0-9A-HJKMNP-TV-Z]{26}$", options: .regularExpression) != nil ? $0 : nil }
         self.actionIdentifier = actionIdentifier
+        receiptRequested = userInfo["_r"] is String
         var custom: [String: Any] = [:]
         for (key, value) in userInfo {
-            guard let key = key as? String, key != "aps", key != "_h" else { continue }
+            guard let key = key as? String, !Self.reservedKeys.contains(key) else { continue }
             custom[key] = value
         }
         dataJSON = JSONSerialization.isValidJSONObject(custom) ? ((try? JSONSerialization.data(withJSONObject: custom)) ?? Data("{}".utf8)) : Data("{}".utf8)
     }
+
+    /// The payload keys that aren't the app's: Apple's, and Pushwren's notification ID, image URL
+    /// and receipt code.
+    static let reservedKeys: Set<String> = ["aps", "_h", "_i", "_r"]
 }
 
 /// Hands every open to every subscriber of `Pushwren.opens`. Opens that arrive while nobody is
