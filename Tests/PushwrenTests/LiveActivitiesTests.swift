@@ -187,6 +187,22 @@ final class LiveActivitiesTests: XCTestCase {
         ])
     }
 
+    func testTheLongerTokensIOS27IssuesAreReported() async {
+        // iOS 27 issues 128-byte push-to-start tokens; the server takes up to 256 bytes.
+        let kind = FakeActivityKind()
+        await tracker.enableRemoteStart(kind)
+        kind.issueStartToken(token(0x0c, count: 128))
+        let activity = FakeActivity(id: "act-1")
+        await tracker.track(activity, key: "order-A1001")
+        activity.issue(token(0x0d, count: 257))
+        activity.issue(token(0x0e, count: 256))
+        let got = await reports(2)
+        XCTAssertEqual(got, [
+            .startToken(attributesType: "OrderAttributes", token: hex(0x0c, count: 128)),
+            .token(key: "order-A1001", token: hex(0x0e, count: 256), attributesType: "OrderAttributes"),
+        ])
+    }
+
     func testARemoteStartedActivityIsTrackedUnderItsPushwrenKey() async {
         let kind = FakeActivityKind()
         await tracker.enableRemoteStart(kind)

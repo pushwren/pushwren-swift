@@ -133,9 +133,10 @@ actor LiveActivityTracker {
         (1...128).contains(type.count) && type != "." && type != ".."
     }
 
-    /// The server's token rule: 32 to 100 bytes, as lowercase hex.
+    /// The server's rule for ActivityKit tokens: 32 to 256 bytes, as lowercase hex. They run
+    /// longer than device tokens (iOS 27 issues 128-byte push-to-start tokens).
     static func isValidToken(_ token: String) -> Bool {
-        token.range(of: "^(?:[0-9a-f]{2}){32,100}$", options: .regularExpression) != nil
+        token.range(of: "^(?:[0-9a-f]{2}){32,256}$", options: .regularExpression) != nil
     }
 
     func track(_ activity: any LiveActivityHandle, key: String) {
