@@ -11,8 +11,9 @@ struct SyncResult: Sendable, Equatable {
 /// Every change is saved first. Device fields go out as one registration (PUT), only when
 /// something changed, the API host changed, or the last successful sync is more than 7 days old.
 /// Tags and the user ID go out as PATCH operations after it, so the developer's server can change
-/// them too (the merge rule). Changes within the debounce window go out together. Failures back
-/// off and retry; a change stays saved until the server takes it, even across relaunches.
+/// them too (the merge rule). Live Activity tokens and ends go out after them, one request each.
+/// Changes within the debounce window go out together. Failures back off and retry; a change
+/// stays saved until the server takes it, even across relaunches.
 actor SyncEngine {
     static let refreshInterval: TimeInterval = 7 * 86_400
 
@@ -22,6 +23,9 @@ actor SyncEngine {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
     private let debounce: TimeInterval
+    /// Called when the server made a new record for this device, which has none of the Live
+    /// Activity tokens reported before: the tracker reports the ones it knows again.
+    private let onNewRecord: @Sendable () -> Void
 
     private var state: PersistedState
     private var running: Task<Void, Never>?
@@ -46,7 +50,8 @@ actor SyncEngine {
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (TimeInterval) async -> Void = SyncEngine.sleep,
         debounce: TimeInterval = 1,
-        freshIdentity: Bool = false
+        freshIdentity: Bool = false,
+        onNewRecord: @escaping @Sendable () -> Void = {}
     ) {
         self.client = client
         self.identity = identity
@@ -54,6 +59,7 @@ actor SyncEngine {
         self.now = now
         self.sleep = sleep
         self.debounce = debounce
+        self.onNewRecord = onNewRecord
         let saved = store.load()
         var state = saved ?? PersistedState(desired: initial)
         if saved == nil, !store.exists, !freshIdentity, (try? identity.load()) != nil {
@@ -136,6 +142,26 @@ actor SyncEngine {
         changed()
     }
 
+    /// Queues a Live Activity token or end; it goes out once the device is registered.
+    func reportActivity(_ report: ActivityReport) {
+        state.pending.report(report)
+        changed()
+    }
+
+    /// The broadcast channel ID of `key` in this device's APNs environment. Never creates one.
+    func channel(for key: String) async throws(LiveActivityError) -> String {
+        let stored: (deviceID: String, secret: String?)?
+        do { stored = try identity.load() } catch { throw .notRegistered }
+        guard let stored, let secret = stored.secret else { throw .notRegistered }
+        do {
+            return try await client.liveActivityChannel(key: key, deviceID: stored.deviceID, secret: secret)
+        } catch .rejected(let code, _) where code == "not_found" {
+            throw .noChannel
+        } catch {
+            throw .requestFailed("\(error)")
+        }
+    }
+
     /// Saves and schedules a sync. An urgent change (the user) also cuts short a retry's wait:
     /// sign-out shouldn't sit behind a long backoff.
     private func changed(urgent: Bool = false) {
@@ -144,12 +170,15 @@ actor SyncEngine {
         if urgent { backoff?.cancel() }
     }
 
-    /// The tags and user the app has set, all queued again: the server made a new record.
+    /// The tags and user the app has set, all queued again: the server made a new record. Queued
+    /// Live Activity reports stay, and the tracker reports the tokens it knows again.
     private func reapplyKnown() {
         var all = PendingChanges()
         all.addTags(state.desired.tags)
         if let id = state.desired.userId { all.user = .set(id: id, signature: state.desired.userIdSignature) }
+        all.activities = state.pending.activities
         state.pending = all
+        onNewRecord()
     }
 
     /// Syncs now if anything is due (a change not yet accepted, or a refresh), and waits for it.
@@ -233,8 +262,9 @@ actor SyncEngine {
             let stale = state.lastSyncAt.map { now().timeIntervalSince($0) > Self.refreshInterval } ?? true
             let needsPut = payload != state.lastSent || stale || state.lastSentHost != host
             let patch = state.pending.patch()
+            let report = state.pending.activities.first
             let open = state.opens.first
-            guard needsPut || patch != nil || open != nil else { return }
+            guard needsPut || patch != nil || report != nil || open != nil else { return }
 
             let stored: (deviceID: String, secret: String?)?
             do {
@@ -287,6 +317,17 @@ actor SyncEngine {
                             state.pending.clear(sent: patch)
                         }
                     }
+                } else if let report, let secret = current.secret {
+                    do {
+                        try await client.send(report, deviceID: current.deviceID, secret: secret)
+                        Log.info("Reported \(report)")
+                    } catch .rejected(let code, let message) where code != "not_found" {
+                        // A refusal for good (409: the key is a broadcast key or another type's
+                        // activity). Sending it again won't change the answer: drop it, say so once.
+                        lastRejected = SyncResult(at: now(), error: .rejected(code: code, message: message))
+                        Log.error("Pushwren dropped \(report), which the server rejected: \(code): \(message)")
+                    }
+                    state.pending.clear(sent: report)
                 } else if let open, let secret = current.secret {
                     do {
                         try await client.postEvent(deviceID: current.deviceID, notificationID: open, secret: secret)

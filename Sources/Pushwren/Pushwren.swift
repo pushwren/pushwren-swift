@@ -310,7 +310,8 @@ actor Runtime {
             identity: identity,
             store: FileStateStore.standard(bundleID: bundleID.isEmpty ? "app" : bundleID),
             initial: DeviceState(platform: platform, bundleId: bundleID, sdkVersion: SDK.version),
-            freshIdentity: freshIdentity
+            freshIdentity: freshIdentity,
+            onNewRecord: { Task { await LiveActivityTracker.shared.reportAgain() } }
         )
         self.engine = engine
 
@@ -380,6 +381,11 @@ actor Runtime {
     func deleteDevice() async -> Bool {
         guard let engine else { return false }
         return await engine.deleteRecord()
+    }
+
+    func liveActivityChannel(_ key: String) async -> Result<String, LiveActivityError> {
+        guard let engine else { return .failure(.notRegistered) }
+        do { return .success(try await engine.channel(for: key)) } catch { return .failure(error) }
     }
 
     private var waitingForUnlock = false

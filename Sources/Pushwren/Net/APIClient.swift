@@ -138,6 +138,60 @@ struct APIClient: Sendable {
         }
     }
 
+    // MARK: Live Activities
+
+    /// Puts an activity's update token under its key, joining the key's activity or starting an app
+    /// one. A rotated token replaces the device's old one. 409 `conflict` when the key is a broadcast
+    /// key or another type's activity.
+    func putActivityToken(_ deviceID: String, key: String, token: String, attributesType: String, secret: String) async throws(APIError) {
+        struct Body: Encodable { let token: String; let attributesType: String }
+        let body: Data
+        do { body = try Self.encoder.encode(Body(token: token, attributesType: attributesType)) } catch { throw .rejected(code: "encoding", message: "\(error)") }
+        _ = try await send("PUT", "v1/devices/\(deviceID)/live-activities/\(Self.segment(key))", body: body, secret: secret)
+    }
+
+    /// Takes the device off the key's activity. 204 also when it wasn't on it.
+    func deleteActivityToken(_ deviceID: String, key: String, secret: String) async throws(APIError) {
+        _ = try await send("DELETE", "v1/devices/\(deviceID)/live-activities/\(Self.segment(key))", body: nil, secret: secret)
+    }
+
+    /// Puts the device's push-to-start token for an activity type.
+    func putStartToken(_ deviceID: String, attributesType: String, token: String, secret: String) async throws(APIError) {
+        struct Body: Encodable { let token: String }
+        let body: Data
+        do { body = try Self.encoder.encode(Body(token: token)) } catch { throw .rejected(code: "encoding", message: "\(error)") }
+        _ = try await send("PUT", "v1/devices/\(deviceID)/start-tokens/\(Self.segment(attributesType))", body: body, secret: secret)
+    }
+
+    /// Sends one queued Live Activity report.
+    func send(_ report: ActivityReport, deviceID: String, secret: String) async throws(APIError) {
+        switch report {
+        case let .token(key, token, type):
+            try await putActivityToken(deviceID, key: key, token: token, attributesType: type, secret: secret)
+        case let .ended(key):
+            try await deleteActivityToken(deviceID, key: key, secret: secret)
+        case let .startToken(type, token):
+            try await putStartToken(deviceID, attributesType: type, token: token, secret: secret)
+        }
+    }
+
+    /// The broadcast channel ID of the key in the device's own APNs environment. Never creates one:
+    /// 404 when there is none.
+    func liveActivityChannel(key: String, deviceID: String, secret: String) async throws(APIError) -> String {
+        let (_, data) = try await send("GET", "v1/live-activities/\(Self.segment(key))/channel?deviceId=\(Self.segment(deviceID))", body: nil, secret: secret)
+        struct Found: Decodable { let channelId: String }
+        guard let found = try? JSONDecoder().decode(Found.self, from: data) else { throw .transient }
+        return found.channelId
+    }
+
+    /// Unreserved characters only (RFC 3986): letters, digits and - . _ ~
+    private static let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+    /// A key or an activity type as one percent-encoded path segment.
+    static func segment(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? value
+    }
+
     /// Retry-After in seconds, kept between 1 s and an hour. A missing, negative or non-numeric
     /// value means a minute; NaN or infinity would otherwise crash the wait.
     static func retryAfter(_ header: String?) -> TimeInterval {
@@ -146,7 +200,9 @@ struct APIClient: Sendable {
     }
 
     private func send(_ method: String, _ path: String, body: Data?, secret: String?) async throws(APIError) -> (Int, Data) {
-        var request = URLRequest(url: key.apiBaseURL.appendingPathComponent(path), timeoutInterval: 15)
+        // `path` is percent-encoded already: appending it as a path component would encode it again.
+        guard let url = URL(string: key.apiBaseURL.absoluteString + "/" + path) else { throw .rejected(code: "encoding", message: path) }
+        var request = URLRequest(url: url, timeoutInterval: 15)
         request.httpMethod = method
         request.setValue("Bearer \(key.raw)", forHTTPHeaderField: "Authorization")
         request.setValue("pushwren-swift/\(SDK.version)", forHTTPHeaderField: "User-Agent")
