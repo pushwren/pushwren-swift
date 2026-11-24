@@ -67,6 +67,10 @@ public struct LiveActivities: Sendable {
     /// whether a push or the app started it, under its `pushwrenKey`, as `track` does: its update
     /// token (if iOS issues one) and its end. Call it at each launch, after `configure`.
     ///
+    /// iOS issues a remotely started activity's update token only after the person taps Allow on
+    /// Apple's "Allow Live Activities from <app>?" prompt shown with it; until then, updates and the
+    /// end can't reach that activity.
+    ///
     /// Your server starts one with `attributesType` set to `String(describing: A.self)`, the Swift
     /// type's name ("OrderAttributes"): that is what Apple matches as `attributes-type`.
     @available(iOS 17.2, *)

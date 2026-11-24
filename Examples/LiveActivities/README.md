@@ -118,7 +118,10 @@ curl -X POST "$PW/v1/live-activities" -H "Authorization: Bearer $SK" \
 - Pushwren writes the key into the attributes as `pushwrenKey`, so the app tracks the new activity
   under `order-A1002` and reports its update token.
 
-Update and end it with the same calls as in step 1, under `order-A1002`.
+The activity appears with Apple's prompt, "Allow Live Activities from Orders?". Tap **Allow**: iOS
+gives the app the activity's update token only then, and until you do, updates and the end can't
+reach it (`GET $PW/v1/live-activities/order-A1002` keeps the device's `at` at the start's time).
+Then update and end it with the same calls as in step 1, under `order-A1002`.
 
 On iOS 18, Pushwren asks Apple for an update token on every remote start. Whether iOS 17.2 to 17.x
 issues one is unverified. A device the start reached is always listed by

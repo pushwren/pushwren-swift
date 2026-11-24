@@ -76,7 +76,9 @@ let channel = try await Pushwren.liveActivities.channel(for: "game-4521")
 
 A type with remote start conforms to `PushwrenActivityAttributes`, a stored `pushwrenKey` the start
 fills in. On a remote start, your server sends `attributesType` as the Swift type's name
-(`"OrderAttributes"`), which is what Pushwren reports. [Examples/LiveActivities](Examples/LiveActivities)
+(`"OrderAttributes"`), which is what Pushwren reports. A remotely started activity can be updated
+only after the person taps **Allow** on Apple's "Allow Live Activities from *your app*?" prompt,
+shown with it: iOS gives the app the activity's update token only then. [Examples/LiveActivities](Examples/LiveActivities)
 is a sample app with a widget extension, and the Xcode steps.
 
 ## Documentation
