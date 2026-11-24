@@ -235,6 +235,62 @@ final class PushwrenExtensionTests: XCTestCase {
         XCTAssertEqual(delivered.attachments.count, 1)
     }
 
+    func testASlowReceiptHoldsTheNotificationForAtMostASecond() async throws {
+        StubURLProtocol.answer { _ in .delayed(3, .response(status: 204)) }
+        let started = Date()
+        let (delivered, request, calls) = await run(["_h": notificationID, "_r": "pAQIDBAUGBwg"])
+        let waited = Date().timeIntervalSince(started)
+        XCTAssertGreaterThanOrEqual(waited, 0.9, "it waits the full second for the receipt")
+        XCTAssertLessThan(waited, 2)
+        XCTAssertTrue(delivered === request.content)
+        XCTAssertEqual(StubURLProtocol.recorded.count, 1, "the receipt request was issued and is left running")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(calls.all.count, 1)
+    }
+
+    func testAFastReceiptDeliversRightAfterIt() async {
+        StubURLProtocol.answer { _ in .delayed(0.2, .response(status: 204)) }
+        let started = Date()
+        _ = await run(["_h": notificationID, "_r": "pAQIDBAUGBwg"])
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.8, "it does not wait out the second")
+    }
+
+    func testAnImageSlowerThanTheWaitIsStillWaitedFor() async throws {
+        let png = try fixture("one.png")
+        StubURLProtocol.answer { recorded in
+            recorded.request.url?.path == "/v1/receipts" ? .delayed(3, .response(status: 204)) : .delayed(1.5, .response(status: 200, body: png))
+        }
+        let started = Date()
+        let (delivered, _, calls) = await run(["_h": notificationID, "_r": "pAQIDBAUGBwg", "_i": "https://cdn.example.com/a.png"])
+        let waited = Date().timeIntervalSince(started)
+        XCTAssertGreaterThanOrEqual(waited, 1.4, "the image is waited for")
+        XCTAssertLessThan(waited, 2.8, "the receipt is not")
+        XCTAssertEqual(delivered.attachments.count, 1)
+        XCTAssertEqual(calls.all.count, 1)
+    }
+
+    func testTheWaitTimerFiringAfterDeliveryDoesNothing() async throws {
+        var short = configuration
+        short.receiptWait = 0.3
+        StubURLProtocol.answer { _ in .response(status: 204) }
+        let (_, _, calls) = await run(["_h": notificationID, "_r": "pAQIDBAUGBwg"], configuration: short)
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(calls.all.count, 1)
+    }
+
+    func testTimeWillExpireRacingTheWaitDeliversOnce() async throws {
+        var short = configuration
+        short.receiptWait = 0.2
+        StubURLProtocol.answer { _ in .delayed(3, .response(status: 204)) }
+        let request = request(["_h": notificationID, "_r": "pAQIDBAUGBwg"])
+        let calls = HandlerCalls()
+        let handle = PushwrenExtension.handle(request, contentHandler: calls.handler, configuration: short)
+        try await Task.sleep(for: .milliseconds(200))
+        handle.timeWillExpire()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(calls.all.count, 1)
+    }
+
     func testTheReceiptPostsEvenWhenTheImageFails() async {
         StubURLProtocol.answer { recorded in
             recorded.request.url?.path == "/v1/receipts" ? .response(status: 204) : .failure(.cannotConnectToHost)
