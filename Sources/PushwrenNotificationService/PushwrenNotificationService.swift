@@ -1,0 +1,140 @@
+import Foundation
+import UserNotifications
+
+/// A Notification Service Extension that attaches a push's image and confirms its delivery to
+/// Pushwren. Make your extension's principal class a subclass:
+///
+///     class NotificationService: PushwrenNotificationService {}
+///
+/// A push with neither an image nor a receipt code is delivered as it came. Subclasses may override
+/// both methods (calling `super`) to change the content further.
+open class PushwrenNotificationService: UNNotificationServiceExtension {
+    private let lock = NSLock()
+    private var handle: PushwrenExtension.Handle?
+    var configuration = PushwrenExtension.Configuration.live
+
+    open override func didReceive(
+        _ request: UNNotificationRequest,
+        withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
+    ) {
+        let handle = PushwrenExtension.handle(request, contentHandler: contentHandler, configuration: configuration)
+        lock.withLock { self.handle = handle }
+    }
+
+    /// iOS calls this, on another thread, when the extension's time is nearly up.
+    open override func serviceExtensionTimeWillExpire() {
+        lock.withLock { handle }?.timeWillExpire()
+    }
+}
+
+/// For an app with its own Notification Service Extension: call `handle` from `didReceive`, and the
+/// returned handle's `timeWillExpire()` from `serviceExtensionTimeWillExpire()`.
+public enum PushwrenExtension {
+    /// Posts the push's delivery receipt (`_r`) and downloads its image (`_i`) at the same time,
+    /// then calls `contentHandler` once with the content, the image attached if it arrived. A push
+    /// with neither is passed to `contentHandler` at once, untouched.
+    public static func handle(
+        _ request: UNNotificationRequest,
+        contentHandler: @escaping (UNNotificationContent) -> Void
+    ) -> Handle {
+        handle(request, contentHandler: contentHandler, configuration: .live)
+    }
+
+    static func handle(
+        _ request: UNNotificationRequest,
+        contentHandler: @escaping (UNNotificationContent) -> Void,
+        configuration: Configuration
+    ) -> Handle {
+        let userInfo = request.content.userInfo
+        let poster = ReceiptPoster(session: configuration.session, localBaseURL: configuration.localReceiptBaseURL)
+        let receipt = poster.request(for: userInfo)
+        let image = ImageAttacher.imageURL(in: userInfo)
+
+        let handle = Handle(content: request.content, contentHandler: contentHandler, pending: (receipt == nil ? 0 : 1) + (image == nil ? 0 : 1))
+        if let receipt {
+            poster.post(receipt) { handle.finished(nil) }
+        }
+        if let image {
+            let task = ImageAttacher(session: configuration.session, directory: configuration.directory).start(image) { attachment in
+                handle.finished(attachment)
+            }
+            handle.imageTask(task)
+        }
+        handle.deliverIfDone()
+        return handle
+    }
+
+    /// One push's work in progress.
+    public final class Handle: @unchecked Sendable {
+        private let lock = NSLock()
+        private let content: UNNotificationContent
+        private var contentHandler: ((UNNotificationContent) -> Void)?
+        private var pending: Int
+        private var attachment: UNNotificationAttachment?
+        private var task: URLSessionTask?
+
+        init(content: UNNotificationContent, contentHandler: @escaping (UNNotificationContent) -> Void, pending: Int) {
+            self.content = content
+            self.contentHandler = contentHandler
+            self.pending = pending
+        }
+
+        /// Delivers what's ready now: the content, with the image only if it has arrived. Later
+        /// results are dropped; the content handler is never called twice.
+        public func timeWillExpire() {
+            deliver()
+            lock.withLock { task }?.cancel()
+        }
+
+        func imageTask(_ task: URLSessionTask) {
+            lock.withLock { self.task = task }
+        }
+
+        /// The receipt (nil) or the image (its attachment, or nil) has finished.
+        func finished(_ image: ImageAttacher.Attachment?) {
+            let late = lock.withLock {
+                pending -= 1
+                if contentHandler == nil { return image }
+                if let image { attachment = image.value }
+                return nil
+            }
+            // Delivered without it: the system won't move the file, so delete it.
+            if let late { try? FileManager.default.removeItem(at: late.value.url) }
+            deliverIfDone()
+        }
+
+        func deliverIfDone() {
+            if lock.withLock({ pending <= 0 }) { deliver() }
+        }
+
+        private func deliver() {
+            let (handler, attachment) = lock.withLock {
+                defer { contentHandler = nil }
+                return (contentHandler, attachment)
+            }
+            guard let handler else { return }
+            guard let attachment, let mutable = content.mutableCopy() as? UNMutableNotificationContent else {
+                return handler(content)
+            }
+            mutable.attachments = content.attachments + [attachment]
+            handler(mutable)
+        }
+    }
+
+    /// What the helper talks to. Tests swap in stubs.
+    struct Configuration: Sendable {
+        let session: URLSession
+        let localReceiptBaseURL: URL?
+        let directory: URL
+
+        static let live = Configuration(
+            session: {
+                let config = URLSessionConfiguration.ephemeral
+                config.urlCache = nil
+                return URLSession(configuration: config)
+            }(),
+            localReceiptBaseURL: nil,
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(PushwrenExtension.markerString, isDirectory: true)
+        )
+    }
+}
