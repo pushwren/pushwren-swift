@@ -1,5 +1,4 @@
 import Foundation
-import PushwrenNotificationService
 import XCTest
 @testable import Pushwren
 
@@ -17,25 +16,17 @@ final class ServiceExtensionTests: XCTestCase {
 
     private static let notificationService = "com.apple.usernotifications.service"
     private static let widget = "com.apple.widgetkit-extension"
+    /// What Xcode names the helper's resource bundle in an extension that links it.
+    private static let helperBundle = "Pushwren_PushwrenNotificationService.bundle"
 
     /// An app extension to put in a fixture app's PlugIns.
     private struct Plugin {
         var name = "NotificationService"
         var point: String? = ServiceExtensionTests.notificationService
-        /// The executable's bytes; nil leaves the executable out.
-        var executable: Data? = ServiceExtensionTests.binary(containing: ServiceExtension.marker)
-        /// Xcode's Debug builds put the code in `<executable>.debug.dylib` beside a small stub.
-        var debugDylib: Data?
-        /// The Mac layout (Contents/Info.plist, Contents/MacOS/<executable>) instead of the iOS one.
+        /// Resource bundles inside the extension.
+        var bundles = [ServiceExtensionTests.helperBundle]
+        /// The Mac layout (Contents/Info.plist, Contents/Resources) instead of the iOS one.
         var mac = false
-    }
-
-    /// Some bytes standing in for a linked executable, with `text` somewhere in the middle.
-    private static func binary(containing text: String? = nil) -> Data {
-        var data = Data(repeating: 0xCF, count: 40_000)
-        if let text { data.append(contentsOf: Array(text.utf8) + [0]) }
-        data.append(Data(repeating: 0xFA, count: 40_000))
-        return data
     }
 
     /// A fixture app bundle (Mac layout, so Foundation finds its PlugIns on the Mac the tests run on)
@@ -46,16 +37,22 @@ final class ServiceExtensionTests: XCTestCase {
         try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
         try plist(["CFBundleIdentifier": "com.example.fixture", "CFBundleExecutable": "Fixture", "CFBundlePackageType": "APPL"])
             .write(to: contents.appendingPathComponent("Info.plist"))
+        if plugins != nil {
+            try FileManager.default.createDirectory(at: contents.appendingPathComponent("PlugIns"), withIntermediateDirectories: true)
+        }
         for plugin in plugins ?? [] {
             let appex = contents.appendingPathComponent("PlugIns/\(plugin.name).appex", isDirectory: true)
             let infoFolder = plugin.mac ? appex.appendingPathComponent("Contents", isDirectory: true) : appex
-            let executableFolder = plugin.mac ? infoFolder.appendingPathComponent("MacOS", isDirectory: true) : appex
-            try FileManager.default.createDirectory(at: executableFolder, withIntermediateDirectories: true)
+            let resources = plugin.mac ? infoFolder.appendingPathComponent("Resources", isDirectory: true) : appex
+            try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
             var info: [String: Any] = ["CFBundleExecutable": plugin.name, "CFBundlePackageType": "XPC!"]
             if let point = plugin.point { info["NSExtension"] = ["NSExtensionPointIdentifier": point] }
             try plist(info).write(to: infoFolder.appendingPathComponent("Info.plist"))
-            try plugin.executable?.write(to: executableFolder.appendingPathComponent(plugin.name))
-            try plugin.debugDylib?.write(to: executableFolder.appendingPathComponent("\(plugin.name).debug.dylib"))
+            for name in plugin.bundles {
+                let bundle = resources.appendingPathComponent(name, isDirectory: true)
+                try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+                try plist(["CFBundlePackageType": "BNDL"]).write(to: bundle.appendingPathComponent("Info.plist"))
+            }
         }
         return try XCTUnwrap(Bundle(url: app))
     }
@@ -64,11 +61,7 @@ final class ServiceExtensionTests: XCTestCase {
         try PropertyListSerialization.data(fromPropertyList: value, format: .xml, options: 0)
     }
 
-    func testTheMarkerIsTheHelpersOwn() {
-        XCTAssertEqual(ServiceExtension.marker, PushwrenExtension.markerString)
-    }
-
-    func testANotificationServiceExtensionWithTheMarkerIsFound() throws {
+    func testANotificationServiceExtensionWithTheHelpersBundleIsFound() throws {
         XCTAssertTrue(ServiceExtension.detect(in: try app([Plugin()])))
     }
 
@@ -76,13 +69,13 @@ final class ServiceExtensionTests: XCTestCase {
         XCTAssertTrue(ServiceExtension.detect(in: try app([Plugin(mac: true)])))
     }
 
-    func testTheMarkerInADebugDylibIsFound() throws {
-        let plugin = Plugin(executable: Self.binary(), debugDylib: Self.binary(containing: ServiceExtension.marker))
-        XCTAssertTrue(ServiceExtension.detect(in: try app([plugin])))
+    func testThePackagesNameMayDiffer() throws {
+        XCTAssertTrue(ServiceExtension.detect(in: try app([Plugin(bundles: ["pushwren-swift_PushwrenNotificationService.bundle"])])))
     }
 
-    func testANotificationServiceExtensionWithoutTheMarkerIsNot() throws {
-        XCTAssertFalse(ServiceExtension.detect(in: try app([Plugin(executable: Self.binary(containing: "com.example.something-else"))])))
+    func testANotificationServiceExtensionWithoutTheHelperIsNot() throws {
+        XCTAssertFalse(ServiceExtension.detect(in: try app([Plugin(bundles: [])])))
+        XCTAssertFalse(ServiceExtension.detect(in: try app([Plugin(name: "Theirs", bundles: ["Pushwren_Pushwren.bundle", "Other_Images.bundle"])])))
     }
 
     func testAnAppWithoutPlugInsHasNone() throws {
@@ -90,21 +83,17 @@ final class ServiceExtensionTests: XCTestCase {
         XCTAssertFalse(ServiceExtension.detect(in: try app([])))
     }
 
-    func testTheMarkerInAnotherKindOfExtensionDoesNotCount() throws {
+    func testTheHelpersBundleInAnotherKindOfExtensionDoesNotCount() throws {
         XCTAssertFalse(ServiceExtension.detect(in: try app([Plugin(name: "Widgets", point: Self.widget)])))
         XCTAssertFalse(ServiceExtension.detect(in: try app([Plugin(name: "Odd", point: nil)])))
     }
 
     func testOneMatchingExtensionAmongOthersIsEnough() throws {
         let plugins = [
-            Plugin(name: "Widgets", point: Self.widget, executable: Self.binary()),
-            Plugin(name: "Their", executable: Self.binary()),
+            Plugin(name: "Widgets", point: Self.widget),
+            Plugin(name: "Theirs", bundles: []),
             Plugin(name: "NotificationService"),
         ]
         XCTAssertTrue(ServiceExtension.detect(in: try app(plugins)))
-    }
-
-    func testAMissingExecutableIsNotAMatch() throws {
-        XCTAssertFalse(ServiceExtension.detect(in: try app([Plugin(executable: nil)])))
     }
 }

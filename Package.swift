@@ -15,12 +15,18 @@ let package = Package(
         ),
         .testTarget(
             name: "PushwrenTests",
-            dependencies: ["Pushwren", "PushwrenNotificationService"],
+            dependencies: ["Pushwren"],
             resources: [.copy("Fixtures")]
         ),
         // For a Notification Service Extension target. It doesn't depend on Pushwren, which uses
-        // app-only APIs, and uses only APIs that are safe in app extensions.
-        .target(name: "PushwrenNotificationService"),
+        // app-only APIs, and uses only APIs that are safe in app extensions. Its resource bundle
+        // (the privacy manifest: delivery receipts identify the device to Pushwren; image
+        // downloads go to a temporary folder) is how the app's Pushwren finds the helper in the
+        // extension (ServiceExtension.detect).
+        .target(
+            name: "PushwrenNotificationService",
+            resources: [.copy("Resources/PrivacyInfo.xcprivacy")]
+        ),
         .testTarget(
             name: "PushwrenNotificationServiceTests",
             dependencies: ["PushwrenNotificationService"],

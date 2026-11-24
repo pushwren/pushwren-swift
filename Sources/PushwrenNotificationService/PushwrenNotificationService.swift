@@ -134,7 +134,7 @@ public enum PushwrenExtension {
                 return URLSession(configuration: config)
             }(),
             localReceiptBaseURL: nil,
-            directory: FileManager.default.temporaryDirectory.appendingPathComponent(PushwrenExtension.markerString, isDirectory: true)
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("com.pushwren.notification-service", isDirectory: true)
         )
     }
 }

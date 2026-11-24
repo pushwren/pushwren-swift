@@ -145,7 +145,8 @@ Declare the same in your App Store privacy answers. Linking the package adds the
 build of that target, even one that never calls `configure`. Registrations also send the device
 model, OS and app version, locale, time zone and notification permission, and taps send an
 `opened` event. With the extension helper, a push that asks for a receipt sends one when it
-arrives. Pushwren uses them to deliver and count your pushes.
+arrives; the PushwrenNotificationService library ships its own privacy manifest, declaring the
+device ID the same way. Pushwren uses them to deliver and count your pushes.
 
 ## License
 

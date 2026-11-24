@@ -287,7 +287,7 @@ final class PushwrenExtensionTests: XCTestCase {
         XCTAssertTrue(StubURLProtocol.recorded.isEmpty)
     }
 
-    // MARK: - The extension class and the marker
+    // MARK: - The extension class and the live configuration
 
     func testTheExtensionClassRunsTheHelper() async throws {
         let png = try fixture("one.png")
@@ -306,9 +306,8 @@ final class PushwrenExtensionTests: XCTestCase {
         XCTAssertTrue(StubURLProtocol.recorded.contains { $0.request.url?.absoluteString == "http://127.0.0.1:4010/v1/receipts" })
     }
 
-    func testTheMarker() {
-        XCTAssertEqual(PushwrenExtension.markerString, "com.pushwren.notification-service.v1")
-        XCTAssertEqual(PushwrenExtension.Configuration.live.directory.lastPathComponent, PushwrenExtension.markerString)
+    func testTheLiveConfiguration() {
+        XCTAssertEqual(PushwrenExtension.Configuration.live.directory.lastPathComponent, "com.pushwren.notification-service")
         XCTAssertNil(PushwrenExtension.Configuration.live.localReceiptBaseURL, "an l code posts nothing outside tests")
     }
 }
