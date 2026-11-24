@@ -80,7 +80,7 @@ struct ContentView: View {
             let attributes = OrderAttributes(pushwrenKey: broadcastKey, orderNumber: "Everyone")
             let content = ActivityContent(state: OrderAttributes.ContentState(status: "Waiting for the first update", etaMinutes: 0), staleDate: nil)
             _ = try Activity.request(attributes: attributes, content: content, pushType: .channel(channel))
-            message = "Following \(broadcastKey). Every broadcast update reaches this activity."
+            message = "Following \(broadcastKey): this activity follows the key's broadcast channel."
         } catch {
             message = "Couldn't follow \(broadcastKey): \(error)"
         }

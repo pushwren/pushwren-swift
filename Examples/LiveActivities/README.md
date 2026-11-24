@@ -121,8 +121,11 @@ curl -X POST "$PW/v1/live-activities" -H "Authorization: Bearer $SK" \
 Update and end it with the same calls as in step 1, under `order-A1002`.
 
 On iOS 18, Pushwren asks Apple for an update token on every remote start. Whether iOS 17.2 to 17.x
-issues one is unverified. If `GET $PW/v1/live-activities/order-A1002` shows no device after the
-start on a 17.x phone, updates can't reach it there; please note it.
+issues one is unverified. A device the start reached is always listed by
+`GET $PW/v1/live-activities/order-A1002`, with the start's result. The sign to look for is its `at`:
+send an update, read the key again, and if the 17.x device's `at` stays at the start's time (no
+update token was reported, so the update skipped it), updates can't reach a remotely started
+activity there; please note it.
 
 ### 3. Broadcast (iOS 18+)
 

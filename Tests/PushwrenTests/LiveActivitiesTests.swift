@@ -457,6 +457,38 @@ final class ActivityReportSyncTests: XCTestCase {
         XCTAssertEqual(sleeper.waits.filter { $0 > 0 }.count, 1)
     }
 
+    func testATryAgainFromTheServerRetriesTheTokenReportAfterABackoff() async {
+        // The server answers 503 try_again while an end is waiting to be sent, or when the key changed
+        // under the request: the token goes again, after a wait, and isn't dropped.
+        let e = await registered()
+        let count = OSAllocatedUnfairLock(initialState: 0)
+        StubURLProtocol.answer { _ in
+            count.withLock { n -> StubURLProtocol.Answer in
+                n += 1
+                return n == 1 ? .json(503, ["error": ["code": "try_again", "message": "order-1 is ending; try again in a moment"]]) : .response(status: 204)
+            }
+        }
+        await e.reportActivity(.token(key: "order-1", token: hex(0x01), attributesType: "OrderAttributes"))
+        await e.settle()
+        XCTAssertEqual(count.withLock { $0 }, 2)
+        XCTAssertEqual(StubURLProtocol.recorded.filter { $0.request.url?.path.hasSuffix("/live-activities/order-1") == true }.count, 2)
+        XCTAssertEqual(store.load()?.pending.activities, [])
+        XCTAssertEqual(sleeper.waits.filter { $0 > 0 }.count, 1, "one backoff before the retry: \(sleeper.waits)")
+        let rejected = await e.lastRejected
+        XCTAssertNil(rejected)
+    }
+
+    func testAServerStartedKeyForOtherDevicesIsDroppedNotRetried() async {
+        let e = await registered()
+        StubURLProtocol.answer { _ in .json(409, ["error": ["code": "conflict", "message": "order-A1002: this Live Activity was started by the server for other devices"]]) }
+        await e.reportActivity(.token(key: "order-A1002", token: hex(0x01), attributesType: "OrderAttributes"))
+        await e.settle()
+        await e.syncIfNeeded()
+        XCTAssertEqual(StubURLProtocol.recorded.filter { $0.request.url?.path.contains("live-activities") == true }.count, 1)
+        XCTAssertEqual(store.load()?.pending.activities, [])
+        XCTAssertTrue(sleeper.waits.allSatisfy { $0 == 0 }, "no backoff for a refusal: \(sleeper.waits)")
+    }
+
     func testReportsSurviveARelaunch() async {
         _ = await registered()
         StubURLProtocol.answer { _ in .response(status: 204) }

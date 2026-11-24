@@ -322,8 +322,11 @@ actor SyncEngine {
                         try await client.send(report, deviceID: current.deviceID, secret: secret)
                         Log.info("Reported \(report)")
                     } catch .rejected(let code, let message) where code != "not_found" {
-                        // A refusal for good (409: the key is a broadcast key or another type's
-                        // activity). Sending it again won't change the answer: drop it, say so once.
+                        // A refusal for good (409: the key is a broadcast key, another type's
+                        // activity, or one the server started for other devices). Sending it again
+                        // won't change the answer: drop it, say so once. A race the server wants
+                        // retried is a 503 (try_again), which is transient: the report stays and
+                        // goes again after the backoff.
                         lastRejected = SyncResult(at: now(), error: .rejected(code: code, message: message))
                         Log.error("Pushwren dropped \(report), which the server rejected: \(code): \(message)")
                     }
