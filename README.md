@@ -26,7 +26,7 @@ by a key of your own.
    Capabilities**; setting `INFOPLIST_KEY_UIBackgroundModes` as a build setting has no effect.
 
 If you use `Package.swift` instead of Xcode, add
-`.package(url: "https://github.com/pushwren/pushwren-swift", .upToNextMinor(from: "0.5.0"))`.
+`.package(url: "https://github.com/pushwren/pushwren-swift", .upToNextMinor(from: "0.5.1"))`.
 
 ## Use
 
