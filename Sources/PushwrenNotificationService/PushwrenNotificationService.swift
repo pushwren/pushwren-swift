@@ -108,7 +108,7 @@ public enum PushwrenExtension {
 
         /// The image has finished: its attachment, or nil if it failed.
         func imageFinished(_ image: ImageAttacher.Attachment?) {
-            let late = lock.withLock {
+            let late = lock.withLock { () -> ImageAttacher.Attachment? in
                 imagePending = false
                 if contentHandler == nil { return image }
                 if let image { attachment = image.value }
@@ -124,15 +124,17 @@ public enum PushwrenExtension {
         }
 
         private func deliver() {
-            let (handler, attachment) = lock.withLock {
+            // The closure's type is written out, and the locals don't reuse a property's name:
+            // Swift 6.1 (Xcode 16) can't work either out here.
+            let (handler, image) = lock.withLock { () -> (((UNNotificationContent) -> Void)?, UNNotificationAttachment?) in
                 defer { contentHandler = nil }
                 return (contentHandler, attachment)
             }
             guard let handler else { return }
-            guard let attachment, let mutable = content.mutableCopy() as? UNMutableNotificationContent else {
+            guard let image, let mutable = content.mutableCopy() as? UNMutableNotificationContent else {
                 return handler(content)
             }
-            mutable.attachments = content.attachments + [attachment]
+            mutable.attachments = content.attachments + [image]
             handler(mutable)
         }
     }
