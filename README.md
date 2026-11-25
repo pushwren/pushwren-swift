@@ -1,8 +1,9 @@
 # Pushwren for Swift
 
-Push notifications for Apple apps, without running your own APNs server. This package registers
-your app's devices with [Pushwren](https://pushwren.com). Your server, or the Pushwren portal,
-then sends to them by device, user or tag.
+Push notifications and Live Activities for Apple apps, without running your own APNs server. This
+package registers your app's devices with [Pushwren](https://pushwren.com). Your server, or the
+Pushwren portal, then sends to them by device, user or tag, and your server updates Live Activities
+by a key of your own.
 
 > **Alpha (0.x).** The API may change before 1.0.
 
