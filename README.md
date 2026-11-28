@@ -26,7 +26,8 @@ by a key of your own.
    Capabilities**; setting `INFOPLIST_KEY_UIBackgroundModes` as a build setting has no effect.
 
 If you use `Package.swift` instead of Xcode, add
-`.package(url: "https://github.com/pushwren/pushwren-swift", .upToNextMinor(from: "0.5.1"))`.
+`.package(url: "https://github.com/pushwren/pushwren-swift", .upToNextMinor(from: "0.6.0"))`. An app on 0.5.x moves to 0.6.0 by changing its
+rule: Up to Next Minor Version from 0.5.1 never picks up 0.6.0.
 
 ## Use
 
@@ -57,6 +58,21 @@ Pushwren.setUserID("u_123")                          // after sign-in, and at ev
 Pushwren.clearUserID()                               // on sign-out
 print(await Pushwren.diagnostics())                  // what Pushwren knows about this device
 ```
+
+### Choosing when to register (0.6.0)
+
+By default a phone registers at launch. To register at sign-in or after consent instead:
+
+```swift
+Pushwren.configure(appKey: "pk_live_...", registration: .manual)
+// …once, at sign-in, never at every launch:
+Pushwren.register()
+```
+
+A registered phone keeps syncing at each launch in either mode. A device deleted on the server, or
+by `Pushwren.deleteDevice()`, stays silent until the app calls `Pushwren.register()` (or is
+reinstalled), which registers it with a new device ID. `Pushwren.setAnalyticsEnabled(false)` stops
+this phone reporting taps, for a person who opts out of analytics.
 
 ### Live Activities (iOS)
 
@@ -111,6 +127,8 @@ The docs at [docs.pushwren.com](https://docs.pushwren.com) cover the rest:
 - [How Apple push works](https://docs.pushwren.com/how-push-works)
 - [Making an APNs key](https://docs.pushwren.com/guides/apns-key)
 - [Users and sign-out](https://docs.pushwren.com/guides/users)
+- [Privacy settings](https://docs.pushwren.com/guides/privacy)
+- [Registration and deletion](https://docs.pushwren.com/guides/registration)
 - [If your app already has an app delegate](https://docs.pushwren.com/guides/app-delegate)
 - [Identity verification](https://docs.pushwren.com/guides/identity-verification)
 - [Silent pushes](https://docs.pushwren.com/guides/silent-pushes)
@@ -129,7 +147,9 @@ The docs at [docs.pushwren.com](https://docs.pushwren.com) cover the rest:
 - Reports Live Activity tokens (update and push-to-start, again whenever Apple rotates one) and
   each activity's end through the same queue, so your server addresses activities by its own key.
   Live Activities are iOS and iPadOS only.
-- Counts opens: a tap on a notification Pushwren sent is reported once, even across relaunches.
+- Counts opens where the app has open tracking on: a tap on a push that carries Pushwren's open
+  marker is reported once, even across relaunches, unless the person switched analytics off.
+  `Pushwren.opens` gets every tap either way.
 - Tells Pushwren whether the app ships its Notification Service Extension helper, so receipts are
   asked only of devices that can send them; the helper attaches images and posts the receipts.
 - Sends tag and user-ID changes as changes, not as a full list, so tags your server adds with
@@ -145,8 +165,8 @@ for tracking, and used for **app functionality**:
 
 Declare the same in your App Store privacy answers. Linking the package adds the manifest to every
 build of that target, even one that never calls `configure`. Registrations also send the device
-model, OS and app version, locale, time zone and notification permission, and taps send an
-`opened` event. With the extension helper, a push that asks for a receipt sends one when it
+model, OS and app version, locale, time zone and notification permission, and, where the app has
+open tracking on, taps send an `opened` event. With the extension helper, a push that asks for a receipt sends one when it
 arrives; the PushwrenNotificationService library ships its own privacy manifest, declaring the
 device ID the same way. Pushwren uses them to deliver and count your pushes.
 
