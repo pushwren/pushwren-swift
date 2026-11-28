@@ -74,6 +74,8 @@ enum APIError: Error, Equatable, Sendable {
     case retryAfter(TimeInterval)
     /// 5xx, timeouts, no network: try again later.
     case transient
+    /// 410 `device_deleted` (0.6.0): the server deleted this device ID and refuses it for good.
+    case deleted
 }
 
 /// When to try again after a failure. nil means don't: the request needs to change first.
@@ -84,7 +86,7 @@ enum RetryPolicy {
         switch error {
         case .retryAfter(let seconds): return seconds
         case .transient: return min(maxDelay, pow(2, Double(min(attempt, 30)))) * jitter
-        case .forbidden, .invalidKey, .rejected: return nil
+        case .forbidden, .invalidKey, .rejected, .deleted: return nil
         }
     }
 }
@@ -145,6 +147,9 @@ struct APIClient: Sendable {
         do {
             _ = try await send("DELETE", "v1/devices/\(deviceID)", body: nil, secret: secret)
         } catch .rejected(let code, _) where code == "not_found" {
+            return
+        } catch .deleted {
+            // Deleted already (the server answers 204 for a deleted ID; an older one may not).
             return
         }
     }
@@ -249,6 +254,14 @@ struct APIClient: Sendable {
             throw .forbidden
         case 404:
             throw .rejected(code: "not_found", message: "not found")
+        case 410:
+            struct Failure: Decodable {
+                struct Body: Decodable { let code: String; let message: String }
+                let error: Body
+            }
+            let failure = try? JSONDecoder().decode(Failure.self, from: data)
+            if failure?.error.code == "device_deleted" { throw .deleted }
+            throw .rejected(code: failure?.error.code ?? "http_410", message: failure?.error.message ?? "")
         case 429:
             let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
             throw .retryAfter(Self.retryAfter(header))

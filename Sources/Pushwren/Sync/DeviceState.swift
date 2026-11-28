@@ -66,6 +66,8 @@ struct PersistedState: Codable, Equatable, Sendable {
     var clearServerTags = false
     /// The last look for Pushwren's extension helper, and which app version and build it was (0.5.0).
     var serviceExtensionCheck: ServiceExtensionCheck?
+    /// Why the SDK sends nothing until `Pushwren.register()` (0.6.0). A reinstall clears it with the file.
+    var stopped: Stopped?
 
     init(desired: DeviceState, lastSent: DevicePayload? = nil, lastSyncAt: Date? = nil) {
         self.desired = desired
@@ -74,7 +76,7 @@ struct PersistedState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens, opensWithReceipt, clearServerTags, serviceExtensionCheck
+        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens, opensWithReceipt, clearServerTags, serviceExtensionCheck, stopped
     }
 
     /// Reads version 1 files too: their tags and user already reached the server inside the
@@ -91,8 +93,14 @@ struct PersistedState: Codable, Equatable, Sendable {
         opensWithReceipt = try c.decodeIfPresent([String].self, forKey: .opensWithReceipt) ?? []
         clearServerTags = try c.decodeIfPresent(Bool.self, forKey: .clearServerTags) ?? false
         serviceExtensionCheck = try c.decodeIfPresent(ServiceExtensionCheck.self, forKey: .serviceExtensionCheck)
+        stopped = try c.decodeIfPresent(Stopped.self, forKey: .stopped)
         version = 2
     }
+}
+
+/// Why the SDK stopped (0.6.0): the device was deleted, on the server or by `deleteDevice()`.
+enum Stopped: String, Codable, Sendable {
+    case deleted
 }
 
 /// Whether a build of the app was found to ship Pushwren's extension helper.

@@ -99,6 +99,7 @@ final class APIClientTests: XCTestCase {
             (.json(401, ["error": ["code": "invalid_api_key", "message": "x"]]), .invalidKey),
             (.json(403, ["error": ["code": "forbidden", "message": "x"]]), .forbidden),
             (.json(429, ["error": ["code": "rate_limited", "message": "x"]], headers: ["Retry-After": "7"]), .retryAfter(7)),
+            (.json(410, ["error": ["code": "device_deleted", "message": "x"]]), .deleted),
             (.json(503, [:]), .transient),
             (.failure(.timedOut), .transient),
             (.failure(.notConnectedToInternet), .transient),
@@ -154,6 +155,10 @@ final class APIClientTests: XCTestCase {
     func testRetryPolicyHonorsRetryAfter() {
         XCTAssertEqual(RetryPolicy.delay(attempt: 0, error: .retryAfter(7)), 7)
         XCTAssertEqual(RetryPolicy.delay(attempt: 9, error: .retryAfter(42)), 42)
+    }
+
+    func testADeletedDeviceIsNeverRetried() {
+        XCTAssertNil(RetryPolicy.delay(attempt: 0, error: .deleted))
     }
 
     func testRetryPolicyDoesNotRetryRejections() {

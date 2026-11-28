@@ -17,7 +17,7 @@ final class PushwrenTests: XCTestCase {
         self.started = started
         self.registered = registered
         Pushwren.hooks = Pushwren.Hooks(
-            start: { key, _ in started.withLock { $0.append(key.raw) } },
+            start: { key, _, registration in started.withLock { $0.append(registration == .manual ? "\(key.raw) manual" : key.raw) } },
             registerForRemoteNotifications: { registered.withLock { $0 += 1 } }
         )
     }
@@ -33,9 +33,16 @@ final class PushwrenTests: XCTestCase {
         XCTAssertEqual(registered.withLock { $0 }, 0)
     }
 
-    func testConfigureStartsTheRuntimeAndRegistersOnTheNextMainLoopTurn() async {
+    func testConfigureStartsTheRuntimeWithItsRegistrationMode() {
         Pushwren.configure(appKey: devKey)
-        XCTAssertEqual(started.withLock { $0 }, [devKey])
+        Pushwren.configure(appKey: devKey, registration: .manual)
+        XCTAssertEqual(started.withLock { $0 }, [devKey, "\(devKey) manual"])
+        // The runtime asks iOS for a token once it knows the phone may register (0.6.0).
+        XCTAssertEqual(registered.withLock { $0 }, 0)
+    }
+
+    func testATokenIsAskedForOnTheNextMainLoopTurn() async {
+        Pushwren.requestToken()
         // SwiftUI runs App.init before UIApplication exists, so registering there would go nowhere.
         XCTAssertEqual(registered.withLock { $0 }, 0)
         for _ in 0..<50 where registered.withLock({ $0 }) == 0 {
@@ -99,6 +106,15 @@ final class PushwrenTests: XCTestCase {
         XCTAssertFalse(String(describing: d.token).contains("0123456789"))
         XCTAssertTrue(d.description.contains("deadbeef"))
         XCTAssertTrue(d.description.contains("dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA"))
+    }
+
+    func testDiagnosticsSayWhenThePhoneWasDeleted() {
+        let d = Diagnostics(deviceID: nil, token: nil, environment: nil, environmentWarning: nil, permission: nil, apiHost: nil, lastSync: nil, lastError: nil, stopped: Diagnostics.deletedMessage)
+        XCTAssertEqual(d.stopped, "Deleted on the server. Call Pushwren.register() to register again.")
+        XCTAssertTrue(d.description.contains("Deleted on the server. Call Pushwren.register() to register again."))
+        let running = Diagnostics(deviceID: nil, token: nil, environment: nil, environmentWarning: nil, permission: nil, apiHost: nil, lastSync: nil, lastError: nil)
+        XCTAssertNil(running.stopped)
+        XCTAssertFalse(running.description.contains("register()"))
     }
 
     func testAuthorizationStatusesMapFromUserNotifications() {

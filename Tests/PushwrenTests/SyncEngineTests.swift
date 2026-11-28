@@ -62,7 +62,7 @@ final class SyncEngineTests: XCTestCase {
         }
     }
 
-    private func engine(debounce: TimeInterval = 0, realSleep: Bool = false, freshIdentity: Bool = false, identityStore: IdentityStore? = nil) -> SyncEngine {
+    private func engine(debounce: TimeInterval = 0, realSleep: Bool = false, freshIdentity: Bool = false, identityStore: IdentityStore? = nil, manual: Bool = false) -> SyncEngine {
         let clock = self.clock!
         let sleeper = self.sleeper!
         let sleep: @Sendable (TimeInterval) async -> Void
@@ -79,7 +79,8 @@ final class SyncEngineTests: XCTestCase {
             now: { clock.now },
             sleep: sleep,
             debounce: debounce,
-            freshIdentity: freshIdentity
+            freshIdentity: freshIdentity,
+            manual: manual
         )
     }
 
@@ -660,5 +661,172 @@ final class SyncEngineTests: XCTestCase {
         fileStore.save(state)
         XCTAssertEqual(FileStateStore(directory: dir).load(), state)
         try? FileManager.default.removeItem(at: dir)
+    }
+
+    // MARK: Manual registration and deleted stays deleted (0.6.0)
+
+    private static let deletedAnswer = StubURLProtocol.Answer.json(410, ["error": ["code": "device_deleted", "message": "Device was deleted"]])
+
+    /// A phone registered under device ID "secret-1"'s record, with a user and a tag the server took.
+    private func registered(manual: Bool = false) async -> SyncEngine {
+        let e = engine(manual: manual)
+        if manual { _ = await e.register() }
+        await e.setUser("u_1", signature: nil)
+        await e.addTags(["pro"])
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        return e
+    }
+
+    func testManualModeSendsNothingAndAsksForNoTokenBeforeRegister() async {
+        let e = engine(manual: true)
+        let asks = await e.mayRequestToken
+        XCTAssertFalse(asks, "no token is asked of iOS before register()")
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.syncIfNeeded()
+        XCTAssertEqual(StubURLProtocol.recorded.count, 0)
+    }
+
+    func testManualModeKeepsSetUserIDAndTagsMadeBeforeRegisterAndSendsThemWithIt() async {
+        let e = engine(manual: true)
+        await e.setUser("u_9", signature: nil)
+        await e.addTags(["beta"])
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        XCTAssertEqual(StubURLProtocol.recorded.count, 0)
+        let started = await e.register()
+        XCTAssertTrue(started)
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT", "PATCH"])
+        XCTAssertEqual(body(1)["userId"] as? String, "u_9")
+        XCTAssertEqual(body(1)["addTags"] as? [String], ["beta"])
+    }
+
+    func testARegisteredPhoneInManualModeSyncsAtLaunchWithoutRegister() async {
+        _ = await registered()
+        answer([.json(200, ["deviceId": "x"])])
+        let relaunch = engine(manual: true)
+        let asks = await relaunch.mayRequestToken
+        XCTAssertTrue(asks)
+        clock.advance(days: 8)
+        await relaunch.syncIfNeeded()
+        XCTAssertEqual(methods, ["PUT"], "the refresh goes out with no register()")
+    }
+
+    func testDeviceDeletedStopsThePhoneAndForgetsIDUserTagsAndPendingChanges() async {
+        let e = await registered()
+        answer([Self.deletedAnswer])
+        await e.addTags(["late"])
+        await e.recordOpen("ntf_1")
+        await e.settle()
+        XCTAssertEqual(methods.last, "PATCH")
+        let stopped = await e.stopped
+        XCTAssertEqual(stopped, .deleted)
+        XCTAssertNil((try? identity.load()) ?? nil, "the device ID is forgotten")
+        let desired = await e.desired
+        XCTAssertNil(desired.userId)
+        XCTAssertEqual(desired.tags, [])
+        XCTAssertNil(store.load()?.pending.patch())
+        XCTAssertEqual(store.load()?.opens, [])
+        XCTAssertEqual(store.load()?.stopped, .deleted)
+        let asks = await e.mayRequestToken
+        XCTAssertFalse(asks)
+        let result = await e.lastResult
+        XCTAssertNil(result?.error, "stopping is not a sync failure")
+    }
+
+    func testTheStopSurvivesARelaunch() async {
+        let e = await registered()
+        answer([Self.deletedAnswer])
+        await e.addTags(["late"])
+        await e.settle()
+        let before = StubURLProtocol.recorded.count
+        // The next launch: the Keychain had no identity, so the runtime saved a new one.
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRZ", secret: nil)
+        let relaunch = engine(freshIdentity: true)
+        await relaunch.update { $0.token = testToken; $0.environment = .sandbox }
+        await relaunch.syncIfNeeded()
+        XCTAssertEqual(StubURLProtocol.recorded.count, before)
+        let stopped = await relaunch.stopped
+        XCTAssertEqual(stopped, .deleted)
+    }
+
+    func testWhileStoppedForegroundANewTokenSetUserIDTagsAndActivityTokensSendNothing() async {
+        let e = await registered()
+        answer([Self.deletedAnswer])
+        await e.addTags(["late"])
+        await e.settle()
+        let before = StubURLProtocol.recorded.count
+        await e.update { $0.token = String(repeating: "b", count: 64) }
+        await e.setUser("u_2", signature: nil)
+        await e.clearUser()
+        await e.addTags(["x"])
+        await e.removeTags(["pro"])
+        await e.reportActivity(.token(key: "order-42", token: String(repeating: "c", count: 64), attributesType: "OrderAttributes"))
+        await e.recordOpen("ntf_2")
+        await e.syncIfNeeded()
+        XCTAssertEqual(StubURLProtocol.recorded.count, before)
+        XCTAssertNil(store.load()?.pending.patch())
+        XCTAssertEqual(store.load()?.pending.activities, [])
+        XCTAssertEqual(store.load()?.opens, [])
+        let desired = await e.desired
+        XCTAssertNil(desired.userId)
+        XCTAssertEqual(desired.tags, [])
+    }
+
+    func testRegisterRestartsAStoppedPhoneWithANewDeviceID() async {
+        let e = await registered()
+        let old = StubURLProtocol.recorded[0].request.url!.lastPathComponent
+        answer([Self.deletedAnswer])
+        await e.addTags(["late"])
+        await e.settle()
+        answer([.json(201, ["deviceId": "x", "deviceSecret": "secret-2"])])
+        let started = await e.register()
+        XCTAssertTrue(started)
+        await e.settle()
+        XCTAssertEqual(methods, ["PUT"])
+        let fresh = StubURLProtocol.recorded[0].request.url!.lastPathComponent
+        XCTAssertNotEqual(fresh, old)
+        XCTAssertEqual((try? identity.load())??.secret, "secret-2")
+        let stopped = await e.stopped
+        XCTAssertNil(stopped)
+        XCTAssertNil(store.load()?.stopped)
+    }
+
+    func testDeleteDeviceEndsStopped() async {
+        let e = await registered()
+        answer([.json(204, [:])])
+        let deleted = await e.deleteRecord()
+        XCTAssertTrue(deleted)
+        let stopped = await e.stopped
+        XCTAssertEqual(stopped, .deleted)
+        clock.advance(days: 8)
+        await e.update { $0.token = String(repeating: "b", count: 64) }
+        await e.syncIfNeeded()
+        XCTAssertEqual(methods, ["DELETE"], "no registration until register()")
+    }
+
+    func testAReinstallLaunchThatGets410StartsFreshWithANewID() async {
+        // The Keychain survives an uninstall; the state file doesn't.
+        identity.save(deviceID: "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA", secret: "kept")
+        answer([Self.deletedAnswer, .json(201, ["deviceId": "x", "deviceSecret": "fresh"])])
+        let e = engine()
+        await e.update { $0.token = testToken; $0.environment = .sandbox }
+        await e.settle()
+        let urls = StubURLProtocol.recorded.map { $0.request.url!.lastPathComponent }
+        XCTAssertEqual(urls.first, "dev_01JD3Q8Z4T7M2K9XW5B6C0HFRA")
+        XCTAssertNotEqual(urls[1], urls[0])
+        XCTAssertEqual((try? identity.load())??.secret, "fresh")
+        let stopped = await e.stopped
+        XCTAssertNil(stopped)
+    }
+
+    func testRegisterOnARegisteredPhoneDoesNothing() async {
+        let e = await registered()
+        let before = StubURLProtocol.recorded.count
+        let started = await e.register()
+        XCTAssertFalse(started)
+        await e.settle()
+        XCTAssertEqual(StubURLProtocol.recorded.count, before)
     }
 }

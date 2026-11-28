@@ -6,6 +6,15 @@ import UIKit
 import AppKit
 #endif
 
+/// When a phone registers with Pushwren (0.6.0).
+public enum Registration: Sendable {
+    /// At launch, as soon as iOS gives a token (the default).
+    case automatic
+    /// Only once the app calls `Pushwren.register()`, for example at sign-in or after consent. A phone
+    /// already registered keeps syncing at each launch.
+    case manual
+}
+
 /// Pushwren: push notifications for Apple apps. Call `configure(appKey:)` once at launch, and
 /// make `PushwrenAppDelegate` the app delegate (or forward its three calls). Everything else
 /// is optional.
@@ -14,18 +23,26 @@ public enum Pushwren {
 
     /// Starts Pushwren with a publishable key ("pk_live_…", or "pk_dev_…" for Pushwren's dev API).
     /// Returns at once: detection, registration and the network all happen in the background.
-    /// `environment` overrides the APNs environment read from the build's entitlement.
+    /// `environment` overrides the APNs environment read from the build's entitlement. With
+    /// `registration: .manual`, a phone that isn't registered yet sends nothing and asks iOS for no
+    /// token until the app calls `register()`.
     @MainActor
-    public static func configure(appKey: String, environment: ApsEnvironment? = nil) {
+    public static func configure(appKey: String, environment: ApsEnvironment? = nil, registration: Registration = .automatic) {
         guard let key = AppKey(appKey) else {
             Log.error("Pushwren.configure needs a publishable key (pk_live_… or pk_dev_…). Never put a secret key (sk_…) in an app.")
             return
         }
-        hooks.start(key, environment)
-        // SwiftUI runs App.init before UIApplication exists, so asking for a token here would go
-        // nowhere. The next turn of the main run loop is after launch, and the delegate is set.
-        let register = hooks.registerForRemoteNotifications
-        DispatchQueue.main.async { MainActor.assumeIsolated { register() } }
+        hooks.start(key, environment, registration)
+    }
+
+    /// Registers this phone with Pushwren: in manual mode, the first time; after the device was
+    /// deleted (on the server, or by `deleteDevice()`), again, with a new device ID and nothing
+    /// carried over. Does nothing for a phone that is registered already. Call it where the app
+    /// decides the person should get notifications, usually sign-in, never at every launch.
+    public static func register() {
+        enqueue {
+            if await Runtime.shared.register() { requestToken() }
+        }
     }
 
     /// How much Pushwren writes to the unified log (subsystem com.pushwren.sdk).
@@ -81,8 +98,9 @@ public enum Pushwren {
     }
 
     /// Deletes this device's record from Pushwren, with its user ID and tags: call it when a user
-    /// deletes their account. The device registers again, as a new device with no user, the next
-    /// time the app syncs. Returns false when Pushwren couldn't be reached; nothing is forgotten then.
+    /// deletes their account. The phone then stays unregistered until the app calls `register()`,
+    /// which gives it a new device ID. Returns false when Pushwren couldn't be reached; nothing is
+    /// forgotten then.
     @discardableResult
     public static func deleteDevice() async -> Bool {
         // On the same queue as every other call, so a setUserID made before it is applied first.
@@ -131,11 +149,11 @@ public enum Pushwren {
 
     /// Seams for tests: what `configure` starts, and how it asks the system for a token.
     struct Hooks {
-        var start: @Sendable (AppKey, ApsEnvironment?) -> Void
+        var start: @Sendable (AppKey, ApsEnvironment?, Registration) -> Void
         var registerForRemoteNotifications: @MainActor () -> Void
 
         static let live = Hooks(
-            start: { key, environment in enqueue { await Runtime.shared.start(key: key, override: environment) } },
+            start: { key, environment, registration in enqueue { await Runtime.shared.start(key: key, override: environment, registration: registration) } },
             registerForRemoteNotifications: {
                 #if canImport(UIKit)
                 UIApplication.shared.registerForRemoteNotifications()
@@ -147,6 +165,12 @@ public enum Pushwren {
     }
 
     @MainActor static var hooks = Hooks.live
+
+    /// Asks iOS for a device token. SwiftUI runs App.init before UIApplication exists, so asking at
+    /// once could go nowhere: the next turn of the main run loop is after launch, with the delegate set.
+    static func requestToken() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { hooks.registerForRemoteNotifications() } }
+    }
 
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
@@ -216,6 +240,10 @@ public struct Diagnostics: Sendable, CustomStringConvertible {
     public let apiHost: String?
     public let lastSync: Date?
     public let lastError: String?
+    /// Set while the SDK sends nothing because the device was deleted (0.6.0).
+    public let stopped: String?
+
+    static let deletedMessage = "Deleted on the server. Call Pushwren.register() to register again."
 
     init(
         deviceID: String?,
@@ -225,7 +253,8 @@ public struct Diagnostics: Sendable, CustomStringConvertible {
         permission: AuthorizationStatus?,
         apiHost: String?,
         lastSync: Date?,
-        lastError: String?
+        lastError: String?,
+        stopped: String? = nil
     ) {
         self.deviceID = deviceID
         self.token = token.map { Log.tail($0) }
@@ -235,6 +264,7 @@ public struct Diagnostics: Sendable, CustomStringConvertible {
         self.apiHost = apiHost
         self.lastSync = lastSync
         self.lastError = lastError
+        self.stopped = stopped
     }
 
     /// The last sync: this launch's, or the last one saved from any launch.
@@ -263,7 +293,7 @@ public struct Diagnostics: Sendable, CustomStringConvertible {
             "  API host:    \(apiHost ?? "not configured")",
             "  last sync:   \(lastSync.map { ISO8601DateFormatter().string(from: $0) } ?? "never")",
             "  last error:  \(lastError ?? "none")",
-        ].joined(separator: "\n")
+        ].joined(separator: "\n") + (stopped.map { "\n  stopped:     \($0)" } ?? "")
     }
 }
 
@@ -279,7 +309,7 @@ actor Runtime {
     /// Calls made before the engine exists, applied in order once it does.
     private var pending: [@Sendable (SyncEngine) async -> Void] = []
 
-    func start(key: AppKey, override: ApsEnvironment?) async {
+    func start(key: AppKey, override: ApsEnvironment?, registration: Registration = .automatic) async {
         guard engine == nil else {
             Log.info("Pushwren.configure was called again; keeping the first configuration")
             return
@@ -299,7 +329,7 @@ actor Runtime {
             // Before the first unlock after a reboot. Try again once protected data is readable;
             // changes made meanwhile are held in `pending`.
             Log.info("Pushwren will start once the device is unlocked")
-            retryStartWhenUnlocked(key: key, override: override)
+            retryStartWhenUnlocked(key: key, override: override, registration: registration)
             return
         }
         if freshIdentity { identity.save(deviceID: ULID.deviceID(), secret: nil) }
@@ -312,6 +342,7 @@ actor Runtime {
             store: FileStateStore.standard(bundleID: bundleID.isEmpty ? "app" : bundleID),
             initial: DeviceState(platform: platform, bundleId: bundleID, sdkVersion: SDK.version),
             freshIdentity: freshIdentity,
+            manual: registration == .manual,
             onNewRecord: { Task { await LiveActivityTracker.shared.reportAgain() } }
         )
         self.engine = engine
@@ -337,6 +368,8 @@ actor Runtime {
         pending = []
         observeForeground()
         await refreshPermission()
+        // No token is asked of iOS while the phone is deleted, or before register() in manual mode.
+        if await engine.mayRequestToken { Pushwren.requestToken() }
         // Sends anything saved but not yet accepted, or the weekly refresh, without holding up
         // the calls queued behind this one.
         Task { await engine.syncIfNeeded() }
@@ -379,8 +412,19 @@ actor Runtime {
             permission: desired?.authorizationStatus,
             apiHost: key?.apiBaseURL.host,
             lastSync: Diagnostics.lastSync(result: result, saved: saved),
-            lastError: Diagnostics.lastError(registration: registrationError, result: result, rejected: rejected)
+            lastError: Diagnostics.lastError(registration: registrationError, result: result, rejected: rejected),
+            stopped: await engine?.stopped == .deleted ? Diagnostics.deletedMessage : nil
         )
+    }
+
+    /// True when it started a registration: the app then asks iOS for a token.
+    func register() async -> Bool {
+        guard let engine else {
+            // Before configure has started the engine: applied once it exists.
+            pending.append { engine in if await engine.register() { Pushwren.requestToken() } }
+            return false
+        }
+        return await engine.register()
     }
 
     func deleteDevice() async -> Bool {
@@ -395,7 +439,7 @@ actor Runtime {
 
     private var waitingForUnlock = false
 
-    private func retryStartWhenUnlocked(key: AppKey, override: ApsEnvironment?) {
+    private func retryStartWhenUnlocked(key: AppKey, override: ApsEnvironment?, registration: Registration) {
         guard !waitingForUnlock else { return }
         waitingForUnlock = true
         #if canImport(UIKit)
@@ -404,13 +448,13 @@ actor Runtime {
         let name = NSApplication.didBecomeActiveNotification
         #endif
         _ = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
-            Pushwren.enqueue { await Runtime.shared.retryStart(key: key, override: override) }
+            Pushwren.enqueue { await Runtime.shared.retryStart(key: key, override: override, registration: registration) }
         }
     }
 
-    private func retryStart(key: AppKey, override: ApsEnvironment?) async {
+    private func retryStart(key: AppKey, override: ApsEnvironment?, registration: Registration) async {
         waitingForUnlock = false
-        await start(key: key, override: override)
+        await start(key: key, override: override, registration: registration)
     }
 
     /// Permission can change in Settings while the app is away: re-read it on every return.

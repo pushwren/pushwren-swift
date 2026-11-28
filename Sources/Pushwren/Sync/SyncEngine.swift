@@ -14,6 +14,10 @@ struct SyncResult: Sendable, Equatable {
 /// them too (the merge rule). Live Activity tokens and ends go out after them, one request each.
 /// Changes within the debounce window go out together. Failures back off and retry; a change
 /// stays saved until the server takes it, even across relaunches.
+///
+/// 0.6.0: in manual mode a phone not registered yet sends nothing until `register()`. A device the
+/// server deleted (410 `device_deleted`), or one `deleteRecord` deleted, stops: it forgets its
+/// identity, user and tags and sends nothing, across relaunches, until `register()`.
 actor SyncEngine {
     static let refreshInterval: TimeInterval = 7 * 86_400
 
@@ -41,6 +45,8 @@ actor SyncEngine {
     /// The user change the server took during this launch. Setting the same user again sends nothing,
     /// until the next launch (the developer's server may have changed it meanwhile).
     private var userConfirmed: PendingChanges.UserChange?
+    /// Manual registration (0.6.0): true until `register()`, for a phone without a record yet.
+    private var holdUnregistered: Bool
 
     init(
         client: APIClient,
@@ -51,8 +57,10 @@ actor SyncEngine {
         sleep: @escaping @Sendable (TimeInterval) async -> Void = SyncEngine.sleep,
         debounce: TimeInterval = 1,
         freshIdentity: Bool = false,
+        manual: Bool = false,
         onNewRecord: @escaping @Sendable () -> Void = {}
     ) {
+        self.holdUnregistered = manual
         self.client = client
         self.identity = identity
         self.store = store
@@ -89,6 +97,41 @@ actor SyncEngine {
     /// The last registration the server accepted, from any launch.
     var lastSyncAt: Date? { state.lastSyncAt }
     var deviceID: String? { (try? identity.load())??.deviceID }
+    /// Why nothing is sent until `register()`, if so.
+    var stopped: Stopped? { state.stopped }
+    /// The phone has a record on the server (the server gave it a secret).
+    private var isRegistered: Bool { (try? identity.load())??.secret != nil }
+    /// Whether the app may ask iOS for a device token: not while stopped, nor before `register()` in manual mode.
+    var mayRequestToken: Bool { state.stopped == nil && !(holdUnregistered && !isRegistered) }
+
+    /// `Pushwren.register()`: starts a manual-mode phone's registration, or restarts a stopped one
+    /// with a new device ID and nothing carried over. False when the phone is registered already.
+    func register() -> Bool {
+        if state.stopped != nil {
+            state.stopped = nil
+            holdUnregistered = false
+            // A new ID: never the deleted one.
+            identity.reset()
+            state.lastSent = nil
+            state.lastSyncAt = nil
+            store.save(state)
+            Log.info("Pushwren.register(): registering again with a new device ID")
+            schedule(after: 0)
+            return true
+        }
+        guard holdUnregistered, !isRegistered else { return false }
+        holdUnregistered = false
+        Log.info("Pushwren.register(): registering this device")
+        schedule(after: 0)
+        return true
+    }
+
+    /// While stopped, the app's changes are dropped (and say so), not saved for later.
+    private func droppedWhileStopped(_ what: String) -> Bool {
+        guard state.stopped != nil else { return false }
+        Log.info("Pushwren dropped \(what): this device was deleted. Call Pushwren.register() to register again.")
+        return true
+    }
 
     /// Applies a change, saves it, and schedules a sync. A change that changes nothing does nothing.
     func update(_ change: @Sendable (inout DeviceState) -> Void) {
@@ -102,6 +145,7 @@ actor SyncEngine {
 
     /// Adds tags (at most 50 on the device; the rest are dropped and logged) and queues the change.
     func addTags(_ tags: [String]) {
+        if droppedWhileStopped("a tag change") { return }
         let known = Pushwren.merge(tags: state.desired.tags, adding: tags)
         state.desired.tags = known
         state.pending.addTags(tags.filter { known.contains($0) })
@@ -109,12 +153,14 @@ actor SyncEngine {
     }
 
     func removeTags(_ tags: [String]) {
+        if droppedWhileStopped("a tag change") { return }
         state.desired.tags = state.desired.tags.filter { !tags.contains($0) }
         state.pending.removeTags(tags)
         changed()
     }
 
     func setUser(_ id: String, signature: String?) {
+        if droppedWhileStopped("setUserID") { return }
         let change = PendingChanges.UserChange.set(id: id, signature: signature)
         if state.pending.user == nil, userConfirmed == change, state.desired.userId == id, state.desired.userIdSignature == signature { return }
         state.desired.userId = id
@@ -124,6 +170,7 @@ actor SyncEngine {
     }
 
     func clearUser() {
+        if droppedWhileStopped("clearUserID") { return }
         if state.pending.user == nil, userConfirmed == .clear, state.desired.userId == nil { return }
         state.desired.userId = nil
         state.desired.userIdSignature = nil
@@ -137,6 +184,7 @@ actor SyncEngine {
     /// Queues an `opened` event; it goes out once the device has its secret. `receiptRequested`:
     /// the push asked for a delivery receipt, which the event says.
     func recordOpen(_ notificationID: String, receiptRequested: Bool = false) {
+        if droppedWhileStopped("an open") { return }
         guard !state.opens.contains(notificationID) else { return }
         state.opens.append(notificationID)
         if receiptRequested { state.opensWithReceipt.append(notificationID) }
@@ -165,6 +213,7 @@ actor SyncEngine {
 
     /// Queues a Live Activity token or end; it goes out once the device is registered.
     func reportActivity(_ report: ActivityReport) {
+        if droppedWhileStopped("\(report)") { return }
         state.pending.report(report)
         changed()
     }
@@ -215,9 +264,9 @@ actor SyncEngine {
     }
 
     /// Deletes this device's record on the server, for when a user deletes their account, then
-    /// forgets the device ID, user and tags. The device registers again, as a new device with no
-    /// user, the next time the app syncs. False when the server couldn't be reached: nothing is
-    /// forgotten, so the app can try again.
+    /// forgets the device ID, user and tags and stops (0.6.0): it registers again, as a new device
+    /// with no user, only once the app calls `register()`. False when the server couldn't be
+    /// reached: nothing is forgotten, so the app can try again.
     func deleteRecord() async -> Bool {
         deleting = true
         defer {
@@ -240,6 +289,13 @@ actor SyncEngine {
                 return false
             }
         }
+        forgetAndStop()
+        Log.info("Deleted the device from Pushwren; it registers again once the app calls Pushwren.register()")
+        return true
+    }
+
+    /// Forgets the device ID, user, tags and everything queued, and stops until `register()`.
+    private func forgetAndStop() {
         identity.reset()
         state.desired.userId = nil
         state.desired.userIdSignature = nil
@@ -250,11 +306,10 @@ actor SyncEngine {
         state.lastSent = nil
         state.lastSyncAt = nil
         state.clearServerTags = false
+        state.stopped = .deleted
         userConfirmed = nil
         lastRejected = nil
         store.save(state)
-        Log.info("Deleted the device from Pushwren")
-        return true
     }
 
     /// Abandons any scheduled sync. The saved state is kept for next time.
@@ -279,6 +334,8 @@ actor SyncEngine {
         var attempt = 0
         var startedOver = false
         while !Task.isCancelled {
+            // Stopped: nothing goes out until register() (0.6.0).
+            guard state.stopped == nil else { return }
             guard let payload = state.desired.payload() else { return }
             let host = client.key.apiBaseURL.host
             let stale = state.lastSyncAt.map { now().timeIntervalSince($0) > Self.refreshInterval } ?? true
@@ -297,6 +354,8 @@ actor SyncEngine {
                 lastResult = SyncResult(at: now(), error: .transient)
                 return
             }
+            // Manual mode: a phone with no record waits for register(); a registered one syncs as usual.
+            if holdUnregistered, stored?.secret == nil { return }
             let current = stored ?? {
                 let fresh = (deviceID: ULID.deviceID(now: now()), secret: String?.none)
                 identity.save(deviceID: fresh.deviceID, secret: nil)
@@ -373,6 +432,20 @@ actor SyncEngine {
                 Log.info("Device \(current.deviceID) was refused; registering as a new device")
                 identity.reset()
                 startedOver = true
+            } catch .deleted where state.clearServerTags && !startedOver {
+                // A reinstall launch (identity in the Keychain, no state file) holding a deleted ID:
+                // a reinstall is the person's own act, so start fresh with a new ID.
+                Log.info("Device \(current.deviceID) was deleted on the server; this reinstall registers as a new device")
+                identity.reset()
+                state.lastSent = nil
+                state.clearServerTags = false
+                startedOver = true
+            } catch .deleted {
+                // The server deleted this device: forget it and stay silent until register().
+                forgetAndStop()
+                lastResult = nil
+                Log.info("Device \(current.deviceID) was deleted on the server. Pushwren sends nothing until the app calls Pushwren.register().")
+                return
             } catch .rejected(let code, _) where code == "not_found" && !needsPut && !startedOver {
                 // The server deleted the device: register it again, which applies everything anew.
                 state.lastSent = nil
