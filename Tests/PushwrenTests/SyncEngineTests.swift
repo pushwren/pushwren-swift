@@ -829,4 +829,19 @@ final class SyncEngineTests: XCTestCase {
         await e.settle()
         XCTAssertEqual(StubURLProtocol.recorded.count, before)
     }
+
+    func testRegisterInManualModeSurvivesARelaunchBeforeTheFirstRegistration() async {
+        let e = engine(manual: true)
+        let started = await e.register()
+        XCTAssertTrue(started)
+        await e.settle()
+        XCTAssertEqual(StubURLProtocol.recorded.count, 0, "no token yet: nothing could go out")
+        // Killed before iOS gave a token; the next launch is still manual, with no register() call.
+        let relaunch = engine(manual: true)
+        let asks = await relaunch.mayRequestToken
+        XCTAssertTrue(asks, "the register() call from the last launch still counts")
+        await relaunch.update { $0.token = testToken; $0.environment = .sandbox }
+        await relaunch.settle()
+        XCTAssertEqual(methods, ["PUT"])
+    }
 }

@@ -17,7 +17,8 @@ open class PushwrenAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        application.registerForRemoteNotifications()
+        // No token request here: `configure` asks once it knows the phone may register (0.6.0), so a
+        // phone waiting for `register()`, or deleted, asks iOS for nothing.
         return true
     }
 
@@ -55,7 +56,7 @@ open class PushwrenAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
 open class PushwrenAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     open func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
-        NSApplication.shared.registerForRemoteNotifications()
+        // No token request here: `configure` asks once it knows the phone may register (0.6.0).
     }
 
     open func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

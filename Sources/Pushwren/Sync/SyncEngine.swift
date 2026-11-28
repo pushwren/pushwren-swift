@@ -85,6 +85,8 @@ actor SyncEngine {
             state.lastSyncAt = nil
         }
         self.state = state
+        // A register() from an earlier launch still counts (final review 4).
+        if state.registrationRequested == true { holdUnregistered = false }
     }
 
     /// Waits, clamped to 0...3600 s so a bad value can never trap the conversion.
@@ -109,6 +111,7 @@ actor SyncEngine {
     func register() -> Bool {
         if state.stopped != nil {
             state.stopped = nil
+            state.registrationRequested = true
             holdUnregistered = false
             // A new ID: never the deleted one.
             identity.reset()
@@ -121,6 +124,8 @@ actor SyncEngine {
         }
         guard holdUnregistered, !isRegistered else { return false }
         holdUnregistered = false
+        state.registrationRequested = true
+        store.save(state)
         Log.info("Pushwren.register(): registering this device")
         schedule(after: 0)
         return true
@@ -309,6 +314,7 @@ actor SyncEngine {
         state.lastSyncAt = nil
         state.clearServerTags = false
         state.stopped = .deleted
+        state.registrationRequested = nil
         userConfirmed = nil
         lastRejected = nil
         store.save(state)

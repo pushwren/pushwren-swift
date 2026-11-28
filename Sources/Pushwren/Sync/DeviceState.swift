@@ -72,6 +72,9 @@ struct PersistedState: Codable, Equatable, Sendable {
     var serviceExtensionCheck: ServiceExtensionCheck?
     /// Why the SDK sends nothing until `Pushwren.register()` (0.6.0). A reinstall clears it with the file.
     var stopped: Stopped?
+    /// The app called `register()` (0.6.0): kept until the device is deleted, so a manual-mode phone
+    /// that couldn't register before a relaunch still does.
+    var registrationRequested: Bool?
 
     init(desired: DeviceState, lastSent: DevicePayload? = nil, lastSyncAt: Date? = nil) {
         self.desired = desired
@@ -80,7 +83,7 @@ struct PersistedState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens, opensWithReceipt, clearServerTags, serviceExtensionCheck, stopped
+        case version, desired, lastSent, lastSyncAt, lastSentHost, pending, opens, opensWithReceipt, clearServerTags, serviceExtensionCheck, stopped, registrationRequested
     }
 
     /// Reads version 1 files too: their tags and user already reached the server inside the
@@ -98,6 +101,7 @@ struct PersistedState: Codable, Equatable, Sendable {
         clearServerTags = try c.decodeIfPresent(Bool.self, forKey: .clearServerTags) ?? false
         serviceExtensionCheck = try c.decodeIfPresent(ServiceExtensionCheck.self, forKey: .serviceExtensionCheck)
         stopped = try c.decodeIfPresent(Stopped.self, forKey: .stopped)
+        registrationRequested = try c.decodeIfPresent(Bool.self, forKey: .registrationRequested)
         version = 2
     }
 }
