@@ -17,6 +17,8 @@ struct DevicePayload: Codable, Equatable, Sendable {
     var sdkVersion: String?
     var model: String?
     var serviceExtension: Bool?
+    /// false when the person switched analytics off (0.6.0); left out otherwise.
+    var analytics: Bool?
 
     init(
         token: String,
@@ -30,7 +32,8 @@ struct DevicePayload: Codable, Equatable, Sendable {
         osVersion: String? = nil,
         sdkVersion: String? = nil,
         model: String? = nil,
-        serviceExtension: Bool? = nil
+        serviceExtension: Bool? = nil,
+        analytics: Bool? = nil
     ) {
         self.token = token
         self.environment = environment
@@ -44,6 +47,7 @@ struct DevicePayload: Codable, Equatable, Sendable {
         self.sdkVersion = sdkVersion
         self.model = model
         self.serviceExtension = serviceExtension
+        self.analytics = analytics
     }
 }
 

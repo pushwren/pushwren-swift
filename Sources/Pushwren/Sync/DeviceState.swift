@@ -21,6 +21,8 @@ struct DeviceState: Codable, Equatable, Sendable {
     var model: String?
     /// Whether the app ships Pushwren's extension helper (0.5.0); nil until checked.
     var serviceExtension: Bool?
+    /// False when the person switched analytics off (`setAnalyticsEnabled(false)`, 0.6.0); nil is on.
+    var analytics: Bool?
 
     init(platform: Platform, bundleId: String, sdkVersion: String? = nil) {
         self.platform = platform
@@ -43,7 +45,9 @@ struct DeviceState: Codable, Equatable, Sendable {
             osVersion: osVersion,
             sdkVersion: sdkVersion,
             model: model,
-            serviceExtension: serviceExtension
+            serviceExtension: serviceExtension,
+            // Only `false` goes out; left out, the server clears it (a registration replaces the record).
+            analytics: analytics == false ? false : nil
         )
     }
 }

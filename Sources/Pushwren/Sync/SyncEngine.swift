@@ -185,6 +185,8 @@ actor SyncEngine {
     /// the push asked for a delivery receipt, which the event says.
     func recordOpen(_ notificationID: String, receiptRequested: Bool = false) {
         if droppedWhileStopped("an open") { return }
+        // The person switched analytics off: the tap reaches the app (`Pushwren.opens`), not Pushwren.
+        guard state.desired.analytics != false else { return }
         guard !state.opens.contains(notificationID) else { return }
         state.opens.append(notificationID)
         if receiptRequested { state.opensWithReceipt.append(notificationID) }

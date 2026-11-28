@@ -97,6 +97,13 @@ public enum Pushwren {
         enqueue { await Runtime.shared.engineDo { await $0.removeTags(clean) } }
     }
 
+    /// Whether taps on this phone's notifications may be counted (default true). With it off, the
+    /// phone reports no taps, and Pushwren asks it for no delivery receipts and adds no open marker
+    /// to its pushes. Kept across launches; `Pushwren.opens` gets every tap either way.
+    public static func setAnalyticsEnabled(_ enabled: Bool) {
+        enqueue { await Runtime.shared.apply { $0.analytics = enabled ? nil : false } }
+    }
+
     /// Deletes this device's record from Pushwren, with its user ID and tags: call it when a user
     /// deletes their account. The phone then stays unregistered until the app calls `register()`,
     /// which gives it a new device ID. Returns false when Pushwren couldn't be reached; nothing is
@@ -131,11 +138,12 @@ public enum Pushwren {
         enqueue { await Runtime.shared.didFailToRegister(message: message) }
     }
 
-    /// Records the tap: it appears on `opens`, and a notification sent by Pushwren is counted as opened.
+    /// Records the tap: it appears on `opens`, and a notification sent by Pushwren with open tracking
+    /// on (it carries `_o`) is counted as opened, unless the person switched analytics off.
     public static func didReceive(response: UNNotificationResponse) {
         let open = OpenedNotification(userInfo: response.notification.request.content.userInfo, actionIdentifier: response.actionIdentifier)
         OpenBroadcaster.shared.yield(open)
-        guard let id = open.notificationID else { return }
+        guard reports(open), let id = open.notificationID else { return }
         Log.info("Notification opened: \(id)")
         let receiptRequested = open.receiptRequested
         enqueue { await Runtime.shared.engineDo { await $0.recordOpen(id, receiptRequested: receiptRequested) } }
@@ -171,6 +179,9 @@ public enum Pushwren {
     static func requestToken() {
         DispatchQueue.main.async { MainActor.assumeIsolated { hooks.registerForRemoteNotifications() } }
     }
+
+    /// Whether a tap goes to Pushwren at all: a Pushwren notification whose app has open tracking on (0.6.0).
+    static func reports(_ open: OpenedNotification) -> Bool { open.notificationID != nil && open.openTracked }
 
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 

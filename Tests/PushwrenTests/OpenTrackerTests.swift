@@ -192,4 +192,59 @@ final class OpenTrackerTests: XCTestCase {
         await e.settle()
         XCTAssertEqual(StubURLProtocol.recorded.last?.request.httpMethod, "PATCH", "later changes still go out")
     }
+
+    // MARK: 0.6.0: reported only where the push asks and the person allows
+
+    func testATapOnAPushWithoutOIsNotReported() {
+        let open = OpenedNotification(userInfo: ["aps": ["alert": "hi"], "_h": ntf], actionIdentifier: "tap")
+        XCTAssertFalse(Pushwren.reports(open))
+    }
+
+    func testATapOnAPushWithOIsReported() {
+        let open = OpenedNotification(userInfo: ["aps": ["alert": "hi"], "_h": ntf, "_o": 1], actionIdentifier: "tap")
+        XCTAssertTrue(Pushwren.reports(open))
+        XCTAssertFalse(Pushwren.reports(OpenedNotification(userInfo: ["_o": 1], actionIdentifier: "tap")), "not without a Pushwren notification ID")
+    }
+
+    func testWithAnalyticsOffATapOnAPushWithOIsNotReported() async {
+        let e = engine()
+        await e.update { [token] in $0.token = token; $0.environment = .sandbox; $0.analytics = false }
+        await e.settle()
+        await e.recordOpen(ntf)
+        await e.settle()
+        XCTAssertEqual(events.count, 0)
+        XCTAssertEqual(store.load()?.opens, [])
+    }
+
+    func testPushwrenOpensYieldsEveryTapEitherWay() async {
+        let b = OpenBroadcaster()
+        let stream = b.subscribe()
+        b.yield(OpenedNotification(userInfo: ["_h": ntf], actionIdentifier: "tap"))
+        b.yield(OpenedNotification(userInfo: ["_h": ntf, "_o": 1], actionIdentifier: "tap"))
+        var it = stream.makeAsyncIterator()
+        let first = await it.next()
+        let second = await it.next()
+        XCTAssertEqual([first?.notificationID, second?.notificationID], [ntf, ntf])
+    }
+
+    func testSetAnalyticsEnabledFalseSendsAnalyticsFalseAndTrueSendsItCleared() async {
+        let e = engine()
+        await e.update { [token] in $0.token = token; $0.environment = .sandbox }
+        await e.settle()
+        await e.update { $0.analytics = false }
+        await e.settle()
+        await e.update { $0.analytics = nil }
+        await e.settle()
+        let puts = StubURLProtocol.recorded.filter { $0.request.httpMethod == "PUT" }.compactMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }
+        XCTAssertEqual(puts.count, 3)
+        XCTAssertNil(puts[0]["analytics"])
+        XCTAssertEqual(puts[1]["analytics"] as? Bool, false)
+        XCTAssertNil(puts[2]["analytics"], "turned back on, the field is left out, which clears it")
+    }
+
+    func testOpenedNotificationDataLeavesOutO() {
+        let open = OpenedNotification(userInfo: ["aps": ["alert": "hi"], "_h": ntf, "_o": 1, "orderId": "A1"], actionIdentifier: "tap")
+        XCTAssertEqual(open.data as? [String: String], ["orderId": "A1"])
+        XCTAssertTrue(OpenedNotification.reservedKeys.contains("_o"))
+    }
 }

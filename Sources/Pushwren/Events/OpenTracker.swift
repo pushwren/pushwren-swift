@@ -7,10 +7,12 @@ public struct OpenedNotification: Sendable {
     public let notificationID: String?
     /// `UNNotificationDefaultActionIdentifier` for a plain tap, or the custom action's identifier.
     public let actionIdentifier: String
-    /// The payload's custom keys (everything but `aps` and Pushwren's own `_h`, `_i` and `_r`) as JSON.
+    /// The payload's custom keys (everything but `aps` and Pushwren's own `_h`, `_i`, `_r` and `_o`) as JSON.
     public let dataJSON: Data
     /// The push asked for a delivery receipt (it carried `_r`).
     let receiptRequested: Bool
+    /// The app has open tracking on for this phone (the push carried `_o`, 0.6.0).
+    let openTracked: Bool
 
     /// The payload's custom keys, for example `["orderId": "A1001"]`.
     public var data: [String: Any] {
@@ -22,6 +24,7 @@ public struct OpenedNotification: Sendable {
         notificationID = h.flatMap { $0.range(of: "^ntf_[0-9A-HJKMNP-TV-Z]{26}$", options: .regularExpression) != nil ? $0 : nil }
         self.actionIdentifier = actionIdentifier
         receiptRequested = userInfo["_r"] is String
+        openTracked = userInfo["_o"] != nil
         var custom: [String: Any] = [:]
         for (key, value) in userInfo {
             guard let key = key as? String, !Self.reservedKeys.contains(key) else { continue }
@@ -30,9 +33,9 @@ public struct OpenedNotification: Sendable {
         dataJSON = JSONSerialization.isValidJSONObject(custom) ? ((try? JSONSerialization.data(withJSONObject: custom)) ?? Data("{}".utf8)) : Data("{}".utf8)
     }
 
-    /// The payload keys that aren't the app's: Apple's, and Pushwren's notification ID, image URL
-    /// and receipt code.
-    static let reservedKeys: Set<String> = ["aps", "_h", "_i", "_r"]
+    /// The payload keys that aren't the app's: Apple's, and Pushwren's notification ID, image URL,
+    /// receipt code and open-tracking marker.
+    static let reservedKeys: Set<String> = ["aps", "_h", "_i", "_r", "_o"]
 }
 
 /// Hands every open to every subscriber of `Pushwren.opens`. Opens that arrive while nobody is
