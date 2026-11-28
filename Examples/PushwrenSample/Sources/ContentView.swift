@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var diagnostics = "Starting…"
     @State private var permission = ""
     @State private var lastOpen = "none yet"
+    @State private var analytics = true
 
     var body: some View {
         NavigationStack {
@@ -34,6 +35,17 @@ struct ContentView: View {
                     Button("Clear user") { Pushwren.clearUserID(); later() }
                     Button("Add tag beta") { Pushwren.addTags(["beta"]); later() }
                     Button("Remove tag beta") { Pushwren.removeTags(["beta"]); later() }
+                }
+                Section("Registration and analytics (0.6.0)") {
+                    Button("Register") { Pushwren.register(); later() }
+                    Button("Delete this device", role: .destructive) {
+                        Task {
+                            _ = await Pushwren.deleteDevice()
+                            await refresh()
+                        }
+                    }
+                    Toggle("Analytics", isOn: $analytics)
+                        .onChange(of: analytics) { on in Pushwren.setAnalyticsEnabled(on); later() }
                 }
             }
             .navigationTitle("Pushwren Sample")
